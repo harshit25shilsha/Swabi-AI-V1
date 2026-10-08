@@ -1,0 +1,15 @@
+{
+  "name": "sample_phase0",
+  "cases": [
+    {
+      "id": "sample_001",
+      "input": "I want a 5 day family trip to Manali",
+      "expected": {}
+    },
+    {
+      "id": "sample_002",
+      "input": "Budget trip to Goa in December",
+      "expected": {}
+    }
+  ]
+}
