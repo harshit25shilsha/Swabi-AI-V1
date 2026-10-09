@@ -1,14 +1,16 @@
-"""Shared pytest fixtures."""
-
-from __future__ import annotations
-
 import os
 
-import pytest
+# Required secrets — set before any app module is imported so the
+# module-level Settings() in app.core.config does not raise.
+os.environ.setdefault("GROQ_API_KEY", "test-groq-key")
+os.environ.setdefault("GUARDRAIL_API_TOKEN", "test-guardrail-token")
 
-os.environ.setdefault("GROQ_API_KEY", "test-key")
+# Optional env — keep tests deterministic regardless of the developer's shell
 os.environ.setdefault("SWABI_API_KEY", "test-swabi-key")
 os.environ.setdefault("REDIS_URL", "")  # disable Redis by default in tests
+
+
+import pytest  # (import after env setup is intentional)
 
 
 @pytest.fixture
