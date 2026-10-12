@@ -152,7 +152,7 @@ changes.
 ```python
 import pytest
 
-from app.detectors.number_words import detect_number_word_sequence
+from app.capabilities.chat_safety.detectors.number_words import detect_number_word_sequence
 
 
 @pytest.mark.parametrize("text", [
@@ -242,8 +242,9 @@ Groq API).
 """
 import pytest
 
-from app.detectors.encoded_digits import detect_encoded_digits
-from app.detectors.number_words import detect_number_word_sequence
+from app.capabilities.chat_safety.detectors.encoded_digits import detect_encoded_digits
+from app.capabilities.chat_safety.detectors.number_words import detect_number_word_sequence
+
 
 
 @pytest.mark.parametrize("text", [

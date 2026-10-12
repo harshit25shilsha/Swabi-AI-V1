@@ -16,3 +16,12 @@ ignore = ["B008"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+addopts = "-m 'not integration'"
+markers = [
+    "integration: tests that call live external providers (opt-in)",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# The Chat Safety SYSTEM_PROMPT is a single opaque string whose bytes are
+# hashed into PROMPT_VERSION. It must not be reformatted.
+"app/capabilities/chat_safety/prompts.py" = ["E501"]
