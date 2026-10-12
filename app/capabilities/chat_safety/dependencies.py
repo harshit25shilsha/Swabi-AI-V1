@@ -6,6 +6,7 @@ Authentication note: this is a **service-to-service** credential. It is
 NOT a user JWT. The guardrail token must never be captured into the
 user-JWT contextvar used by ``SwabiClient``. See integration plan §2.
 """
+
 from __future__ import annotations
 
 from fastapi import Header, HTTPException, status

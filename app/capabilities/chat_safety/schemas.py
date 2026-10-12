@@ -59,3 +59,22 @@ class LLMResult(BaseModel):
     decision: Action
     category: ModerationCategory | None = None
     confidence: float = Field(..., ge=0.0, le=1.0)
+
+
+class GuardrailDecision(StrEnum):
+    """Internal decision values for guardrail evaluation"""
+
+    ALLOW = "ALLOW"
+    BLOCK = "BLOCK"
+    REVIEW = "REVIEW"  # internal only
+    UNAVAILABLE = "UNAVAILABLE"  # internal only
+
+
+class GuardrailResult(BaseModel):
+    """Structured outcome of a guardrail check."""
+
+    decision: GuardrailDecision
+    reason_codes: list[str] = Field(default_factory=list)
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    source: str = "unknown"
+    message: str | None = None

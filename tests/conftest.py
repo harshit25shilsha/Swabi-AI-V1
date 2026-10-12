@@ -8,6 +8,7 @@ This ordering matters: pydantic-settings resolves env vars before the
 .env file, so setting a dummy env var while the real value sits in .env
 would silently shadow the real value.
 """
+
 from __future__ import annotations
 
 import os

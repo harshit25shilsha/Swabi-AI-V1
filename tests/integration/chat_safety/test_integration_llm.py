@@ -3,6 +3,7 @@ Integration tests that hit the real Groq API.
 Run with:  pytest -m integration -v
 Skip in CI: pytest -m "not integration"
 """
+
 import time
 
 import pytest
@@ -38,7 +39,7 @@ def _call_with_retry(text: str, attempts: int = 3):
         except (RateLimitError, BadRequestError) as e:
             last = e
             backoff = 15 * (i + 1)
-            print(f"\n[transient] {type(e).__name__}, retry {i+1}/{attempts} after {backoff}s")
+            print(f"\n[transient] {type(e).__name__}, retry {i + 1}/{attempts} after {backoff}s")
             time.sleep(backoff)
     raise last
 
@@ -93,4 +94,3 @@ def test_llm_allows_normal_chat(text):
     result = _call_with_retry(text)
     assert result.action == "ALLOW", f"False positive: {text!r} -> {result}"
     assert result.confidence > 0, f"LLM failed and pipeline failed open: {text!r}"
-

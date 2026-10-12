@@ -7,6 +7,7 @@ breakers, and the consensus loop. Public entry point:
 NOTE: This module is temporary. Step 9 replaces it with an adapter over
 the shared LLMGateway, and deletes it.
 """
+
 from __future__ import annotations
 
 import json
@@ -63,7 +64,7 @@ def _parse_llm_json(raw: str) -> dict:
         start = raw.find("{")
         end = raw.rfind("}")
         if start != -1 and end > start:
-            return json.loads(raw[start:end + 1])
+            return json.loads(raw[start : end + 1])
         raise
 
 
@@ -73,9 +74,7 @@ def _coerce_result(data: dict) -> LLMResult:
     try:
         return LLMResult(**data)
     except ValidationError:
-        logger.warning(
-            "Invalid LLM category %r; coercing", data.get("category")
-        )
+        logger.warning("Invalid LLM category %r; coercing", data.get("category"))
         if data.get("decision") == "BLOCK":
             return LLMResult(
                 decision="BLOCK",
@@ -142,9 +141,7 @@ def moderate_with_llm(message: str) -> tuple[LLMResult, str]:
             result, provider = _classify_with_fallback(message)
         except Exception as e:
             last_exc = e
-            logger.warning(
-                "consensus attempt %d/%d failed", i + 1, attempts
-            )
+            logger.warning("consensus attempt %d/%d failed", i + 1, attempts)
             continue
 
         if result.decision == Action.BLOCK:
@@ -156,7 +153,5 @@ def moderate_with_llm(message: str) -> tuple[LLMResult, str]:
         raise last_exc
 
     # highest-confidence ALLOW, keep its provider
-    best_result, best_provider = max(
-        allows, key=lambda rp: rp[0].confidence
-    )
+    best_result, best_provider = max(allows, key=lambda rp: rp[0].confidence)
     return best_result, best_provider

@@ -23,9 +23,7 @@ def test_falls_back_to_gemini_when_groq_fails():
     gemini = MagicMock(spec=GeminiProvider)
     gemini.name = "gemini"
     gemini.is_available.return_value = True
-    gemini.classify.return_value = (
-        '{"decision":"BLOCK","category":"PHONE_NUMBER","confidence":0.9}'
-    )
+    gemini.classify.return_value = '{"decision":"BLOCK","category":"PHONE_NUMBER","confidence":0.9}'
 
     with patch(
         "app.capabilities.chat_safety.moderator.get_providers",
@@ -64,9 +62,7 @@ def test_skips_provider_with_open_circuit():
     gemini = MagicMock(spec=GeminiProvider)
     gemini.name = "gemini"
     gemini.is_available.return_value = True
-    gemini.classify.return_value = (
-        '{"decision":"ALLOW","category":null,"confidence":0.9}'
-    )
+    gemini.classify.return_value = '{"decision":"ALLOW","category":null,"confidence":0.9}'
 
     circuit = moderator._get_circuit("groq")
     for _ in range(settings.llm_circuit_failure_threshold):
@@ -89,9 +85,7 @@ def test_increments_provider_counter_on_success():
 
     gemini = MagicMock(spec=GeminiProvider)
     gemini.name = "gemini"
-    gemini.classify.return_value = (
-        '{"decision":"ALLOW","category":null,"confidence":0.9}'
-    )
+    gemini.classify.return_value = '{"decision":"ALLOW","category":null,"confidence":0.9}'
 
     with patch(
         "app.capabilities.chat_safety.moderator.get_providers",

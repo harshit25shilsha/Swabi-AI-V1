@@ -4,6 +4,7 @@ The state-machine tests live in tests/unit/test_circuit_breaker.py.
 This file covers the interaction between the moderator's provider ladder
 and the shared circuit registry.
 """
+
 from __future__ import annotations
 
 import pytest

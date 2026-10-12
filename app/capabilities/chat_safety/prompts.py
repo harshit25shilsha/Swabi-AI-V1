@@ -5,6 +5,7 @@ reviewable artifact. `PROMPT_VERSION` is derived deterministically from
 the prompt text — any change to the prompt changes the version, which
 propagates to the moderation log line and API response.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -51,6 +52,4 @@ EXAMPLES (guidance only)
 "Refund kitne din mein aata hai?" -> ALLOW
 """
 
-PROMPT_VERSION = "marketplace_" + hashlib.sha256(
-    SYSTEM_PROMPT.encode("utf-8")
-).hexdigest()[:8]
+PROMPT_VERSION = "marketplace_" + hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest()[:8]

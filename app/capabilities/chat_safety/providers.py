@@ -8,6 +8,7 @@ Each provider exposes:
 NOTE: This module is temporary. Step 9 replaces it with an adapter over
 the shared LLMGateway, and deletes it.
 """
+
 from __future__ import annotations
 
 import logging

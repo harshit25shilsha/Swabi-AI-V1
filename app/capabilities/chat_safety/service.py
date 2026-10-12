@@ -11,6 +11,7 @@ Then applies the policy layer to produce the final ALLOW/BLOCK decision.
 Returns the public ``ModerationResponse``. The public contract is
 preserved byte-for-byte; step 10 serializes it unchanged.
 """
+
 from __future__ import annotations
 
 import logging
@@ -47,14 +48,14 @@ logger = logging.getLogger(__name__)
 # Order matters. Email before URL so "@" forms are classified as EMAIL.
 # (Detector fn, category, confidence)
 _DETERMINISTIC_CHECKS = [
-    (detect_phone,                 ModerationCategory.PHONE_NUMBER,        0.99),
-    (detect_number_word_sequence,  ModerationCategory.PHONE_NUMBER,        0.80),
-    (detect_encoded_digits,        ModerationCategory.PHONE_NUMBER,        0.80),
-    (detect_high_digit_density,    ModerationCategory.PHONE_NUMBER,        0.75),
-    (detect_arithmetic_digits,     ModerationCategory.PHONE_NUMBER,        0.85),
-    (detect_email,                 ModerationCategory.EMAIL,               0.99),
-    (detect_payment,               ModerationCategory.PAYMENT_INFORMATION, 0.97),
-    (detect_url,                   ModerationCategory.EXTERNAL_URL,        0.95),
+    (detect_phone, ModerationCategory.PHONE_NUMBER, 0.99),
+    (detect_number_word_sequence, ModerationCategory.PHONE_NUMBER, 0.80),
+    (detect_encoded_digits, ModerationCategory.PHONE_NUMBER, 0.80),
+    (detect_high_digit_density, ModerationCategory.PHONE_NUMBER, 0.75),
+    (detect_arithmetic_digits, ModerationCategory.PHONE_NUMBER, 0.85),
+    (detect_email, ModerationCategory.EMAIL, 0.99),
+    (detect_payment, ModerationCategory.PAYMENT_INFORMATION, 0.97),
+    (detect_url, ModerationCategory.EXTERNAL_URL, 0.95),
 ]
 
 
