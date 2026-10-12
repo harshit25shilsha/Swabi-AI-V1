@@ -12,7 +12,6 @@ from app.core.exceptions import AIProviderError, AITimeoutError
 from app.core.logging import get_logger
 from app.llm.schemas import LLMResponse, TokenUsage
 
-
 log = get_logger(__name__)
 
 GROQ_CHAT_URL = settings.groq_chat_url
