@@ -125,3 +125,112 @@ class GroqProvider:
 
         # Should not be reached
         raise AIProviderError(f"Groq failed after retries: {last_exc}")
+
+    def generate_sync(
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        temperature: float = 0.2,
+        json_mode: bool = False,
+        **extra: object,
+    ) -> LLMResponse:
+        """Synchronous mirror of ``generate``.
+        Uses ``httpx.Client`` (sync) instead of ``httpx.AsyncClient``.
+        Same payload, same retry policy, same response parsing.
+
+        Exists so sync callers (e.g. Chat Safety) can route through the
+        shared gateway without converting their entire call chain to
+        async."""
+
+        messages: list[dict[str, str]] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+
+        payload: dict[str, object] = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+        }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        payload.update(extra)
+
+        attempt = 0
+        delay = 0.5
+        last_exc: Exception | None = None
+
+        while attempt <= self.max_retries:
+            attempt += 1
+            start = time.perf_counter()
+            try:
+                with httpx.Client(timeout=self.timeout) as client:
+                    resp = client.post(
+                        GROQ_CHAT_URL,
+                        headers={
+                            "Authorization": f"Bearer {self.api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json=payload,
+                    )
+            except httpx.TimeoutException as exc:
+                last_exc = AITimeoutError(f"Groq timeout after {self.timeout}s")
+                log.warning(
+                    "Groq sync timeout (attempt %d%d)",
+                    attempt,
+                    self.max_retries + 1,
+                )
+
+                if attempt > self.max_retries:
+                    raise last_exc from exc
+                time.sleep(delay)
+                delay *= 2
+                continue
+            except httpx.HTTPError as exc:
+                last_exc = AIProviderError(f"Groq network error: {exc}")
+                log.warning(
+                    "Groq sync network error (attempt %d): %s",
+                    attempt,
+                    exc,
+                )
+                if attempt > self.max_retries:
+                    raise last_exc from exc
+                time.sleep(delay)
+                delay *= 2
+                continue
+
+            if resp.status_code in RETRYABLE_STATUS and attempt <= self.max_retries:
+                log.warning(
+                    "Groq sync retryable status %s (attempt %d)",
+                    resp.status_code,
+                    attempt,
+                )
+                time.sleep(delay)
+                delay *= 2
+                continue
+
+            if resp.status_code >= 400:
+                raise AIProviderError(f"Groq sync HTTP {resp.status_code}: {resp.text[:300]}")
+
+            data = resp.json()
+            latency_ms = (time.perf_counter() - start) * 1000
+            try:
+                choice = data["choices"][0]["message"]["content"]
+            except (KeyError, IndexError, TypeError) as exc:
+                raise AIProviderError(f"Groq sync malformed response: {exc}") from exc
+
+            usage = data.get("usage") or {}
+            return LLMResponse(
+                content=choice,
+                model=data.get("model", self.model),
+                usage=TokenUsage(
+                    prompt_tokens=usage.get("prompt_tokens", 0),
+                    completion_tokens=usage.get("completion_tokens", 0),
+                    total_tokens=usage.get("total_tokens", 0),
+                ),
+                latency_ms=latency_ms,
+                metadata={"provider": "groq", "attempt": attempt, "mode": "sync"},
+            )
+
+        raise AIProviderError(f"Groq sync failed after retries: {last_exc}")
