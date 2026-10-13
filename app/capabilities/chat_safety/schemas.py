@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 class Action(StrEnum):
     ALLOW = "ALLOW"
     BLOCK = "BLOCK"
+    REVIEW = "REVIEW"
 
 
 class ModerationCategory(StrEnum):
