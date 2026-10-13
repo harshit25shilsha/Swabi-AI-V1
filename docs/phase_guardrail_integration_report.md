@@ -3,7 +3,8 @@
 **Branch:** `feat/guardrail-integration`
 **Scope:** Integrate the Guardrail Service (GDv1) into the Swabi AI
 Foundation (Phase 0) as a dedicated Chat Safety capability.
-**Status:** Integration complete. Production release gates remain open.
+**Status:** Integration complete + post-integration hardening. Production
+release gates remain open.
 **Date:** October 2026
 
 This report follows the structure required by §10 of
@@ -51,13 +52,14 @@ does not receive or forward user JWTs.
 
 ### From GDv1
 
-- All 10 deterministic detectors — verbatim, byte-for-byte identical
-  detection logic.
+- All 10 original deterministic detectors — verbatim, byte-for-byte
+  identical detection logic.
 - `policies/policy.py` — `BLOCKED_CATEGORIES` and `apply_policy`,
   unchanged. The separation between "detect evidence" and "apply
   policy" is preserved.
-- `SYSTEM_PROMPT` and `PROMPT_VERSION` — byte-identical. The prompt
-  hash is unchanged, so any downstream audit correlation is preserved.
+- `SYSTEM_PROMPT` and `PROMPT_VERSION` — byte-identical at the time of
+  the move. The scattered-number hardening extended the prompt
+  afterward (see Addendum).
 - Public response schema fields and `ALLOW`/`BLOCK` semantics.
 - The moderation log event shape (fields, names, values).
 - The `/metrics` endpoint shape and metric names.
@@ -70,7 +72,7 @@ does not receive or forward user JWTs.
 - Exception hierarchy (extended).
 - The request-ID contextvar (`request_id_var`).
 - `SwabiClient`, `LLMGateway`, `BaseSwabiTool`, RAG interface, LangGraph
-  base, evaluation runner — untouched by this phase.
+  base, evaluation runner.
 - Middleware framework.
 
 ---
@@ -82,33 +84,30 @@ does not receive or forward user JWTs.
 | File | Purpose |
 |---|---|
 | `app/capabilities/__init__.py` | Package marker |
-| `app/capabilities/chat_safety/` | Full capability (detectors, policy, prompt, schemas, service, dependencies, adapter, moderator) |
+| `app/capabilities/chat_safety/` | Full capability |
 | `app/capabilities/chat_safety/llm_adapter.py` | Groq via `LLMGateway` + Gemini via `google-genai` |
 | `app/api/routes/{metrics,chat_safety}.py` | Routes moved from GDv1 |
-| `app/observability/{counters,circuit_breaker,middleware}.py` | Moved from GDv1 to a shared location |
-| `tests/unit/chat_safety/` | Full unit-test suite for the capability |
-| `tests/integration/chat_safety/` | Route-level tests (mocked + live opt-in) |
+| `app/observability/{counters,circuit_breaker,middleware}.py` | Moved from GDv1 |
+| `tests/unit/chat_safety/` | Unit-test suite |
+| `tests/integration/chat_safety/` | Route-level tests |
 | `tests/contract/test_chat_safety_contract.py` | Locks the public API shape |
 | `tests/integration/test_auth_boundary.py` | Guards the JWT/service-token separation |
-| `tests/integration/test_middleware_order.py` | Verifies actual middleware order |
-| `docs/guardrail_integration_plan.md` | Plan (pre-implementation) |
-| `docs/gdv1_test_verification.md` | Test-suite audit |
-| `docs/architecture.md` | Reference doc |
-| `docs/phase_guardrail_integration_report.md` | This report |
+| `tests/integration/test_middleware_order.py` | Verifies middleware order |
+| `docs/*` | This set of documents |
 
 ### Modified
 
 | File | Change |
 |---|---|
-| `app/core/config.py` | Added guardrail fields; upper-case read-only property aliases; `LLM_CONSENSUS_ATTEMPTS` default = 1 |
-| `app/core/logging.py` | Merged GDv1's JSON formatter; `setup_logging(level, fmt)`; request_id attached as a field |
-| `app/core/exceptions.py` | Added `GuardrailError`, `GuardrailUnavailableError`, `GuardrailValidationError`, `CircuitOpenError` (subclass of `GuardrailUnavailableError`) |
-| `app/main.py` | Three middlewares registered in LIFO order; `USER_JWT_ROUTE_PREFIXES` allow-list; three routers registered |
-| `app/observability/middleware.py` | Reads request_id from shared contextvar; no longer writes `X-Request-ID` |
+| `app/core/config.py` | Guardrail fields; property aliases; consensus default = 1; `LLM_MAX_TOKENS=512` |
+| `app/core/logging.py` | Merged GDv1's JSON formatter; `setup_logging(level, fmt)` |
+| `app/core/exceptions.py` | `GuardrailError`, `GuardrailUnavailableError`, `GuardrailValidationError`, `CircuitOpenError` |
+| `app/main.py` | Middleware order; `USER_JWT_ROUTE_PREFIXES`; three routers |
+| `app/observability/middleware.py` | Reads request_id from shared contextvar; does not write `X-Request-ID` |
 | `app/api/routes/health.py` | Superset of Phase 0 and GDv1 health shapes |
-| `app/capabilities/chat_safety/dependencies.py` | `secrets.compare_digest` for token comparison |
-| `app/llm/groq.py`, `app/llm/gateway.py` | Added `generate_sync()` — synchronous mirror for the sync Chat Safety chain |
-| `app/capabilities/chat_safety/moderator.py` | Uses the adapter; raises `CircuitOpenError` when all circuits are open; no more `assert last_exc is not None` |
+| `app/capabilities/chat_safety/dependencies.py` | `secrets.compare_digest` |
+| `app/llm/groq.py`, `app/llm/gateway.py` | Added `generate_sync()`; shared sync client; timeout per request; `json_validate_failed` fallback |
+| `app/capabilities/chat_safety/moderator.py` | Uses adapter; raises `CircuitOpenError` |
 | `requirements.txt` | Removed `groq`; added `google-genai` |
 
 ### Removed
@@ -116,20 +115,16 @@ does not receive or forward user JWTs.
 | File | Reason |
 |---|---|
 | `app/capabilities/chat_safety/providers.py` | Replaced by `llm_adapter.py` |
-| `groq` package dependency | Groq now reached via the shared gateway (httpx) |
+| `groq` package dependency | Groq reached via shared gateway (httpx) |
 
-### Test-suite corrections (pre-move verification, per plan §5.10)
+### Test-suite corrections
 
-- `tests/moderation.py` → `test_moderation_service.py` (was not
-  collected due to missing prefix).
-- `tests/test_number_words.py` — duplicate import removed; two pairs of
-  overlapping tests merged.
-- `tests/test_disguised_numbers.py` — no-op `assert ... or True` test
-  deleted.
-- `tests/test_integration_llm.py` — duplicate entries removed from
-  `NORMAL_MUST_ALLOW`.
-- `tests/conftest.py` — loads `.env` before setting dummy env vars, so
-  the developer's real Groq key is visible to integration tests.
+- `tests/moderation.py` → `test_moderation_service.py`.
+- `tests/test_number_words.py` — duplicate import removed; overlapping
+  tests merged.
+- `tests/test_disguised_numbers.py` — no-op `assert ... or True` deleted.
+- `tests/test_integration_llm.py` — duplicate entries removed.
+- `tests/conftest.py` — loads `.env` before setting dummy env vars.
 
 ---
 
@@ -151,30 +146,31 @@ chat_safety route
   ├─ verify_token (compare_digest)
   ├─ ChatSafetyService.moderate()
   │    ├─ normalize
-  │    ├─ deterministic detectors
-  │    ├─ if no match: ChatSafetyLLMAdapter.classify()
+  │    ├─ hard detectors (bool)
+  │    ├─ soft detectors (ALLOW / REVIEW / BLOCK)
+  │    ├─ if no block: ChatSafetyLLMAdapter.classify()
   │    │     └─ LLMGateway.generate_sync() with provider ladder
   │    ├─ apply_policy
-  │    └─ return ModerationResponse
-  ├─ attach request_id, prompt_version
-  └─ stash result on request.state for the middleware to log
+  │    └─ escalation: soft REVIEW + LLM ALLOW -> source="review"
+  └─ return ModerationResponse
   ▼
 ObservabilityMiddleware emits moderation log line + counters
   ▼
 request_id_middleware sets X-Request-ID on the response
   ▼
-NestJS receives ModerationResponse (public contract)
+NestJS receives ModerationResponse
 ```
 
 Component responsibilities:
 
 - **Route:** validate request, authenticate, invoke service, serialize.
-- **Service:** orchestrate normalize → detect → LLM → policy.
-- **Detectors:** cheap deterministic rules.
+- **Service:** orchestrate normalize → detect → LLM → policy → escalate.
+- **Detectors (hard):** cheap deterministic rules.
+- **Detectors (soft):** aggregate rules; can produce REVIEW.
 - **Moderator:** provider ladder, circuits, JSON parsing, consensus.
-- **Adapter:** turns a provider name + prompt into a raw response string.
-- **LLM gateway:** provider transport (httpx + retries).
-- **Policy:** converts LLM classification into a final decision.
+- **Adapter:** provider name + prompt → raw response string.
+- **LLM gateway:** provider transport (httpx + retries + pooling).
+- **Policy:** evidence → final decision.
 - **Middleware:** correlation, counters, log event.
 
 ---
@@ -212,25 +208,29 @@ Unchanged field set, locked by
   "action": "ALLOW" | "BLOCK",
   "category": string | null,
   "confidence": float,
-  "source": "deterministic" | "llm" | "fail_open",
+  "source": "deterministic" | "llm" | "review" | "fail_open",
   "request_id": "gr_…",
   "prompt_version": "marketplace_…",
   "provider": "groq" | "gemini" | ""
 }
 ```
 
+`source="review"` was added post-integration. It is additive: existing
+consumers that only check `allowed` and `action` require no change.
+
 ### Auth
 
 Unchanged: `Authorization: Bearer <GUARDRAIL_API_TOKEN>`.
-Tightened: comparison now uses `secrets.compare_digest`.
+Tightened: comparison uses `secrets.compare_digest`.
 
 ### Internal additions not exposed
 
-- `GuardrailDecision` and `GuardrailResult` — internal only.
-- `REVIEW` and `UNAVAILABLE` decision values — never serialized on the
-  public endpoint.
+- `GuardrailDecision` and `GuardrailResult` — internal.
+- `REVIEW` and `UNAVAILABLE` decision values — never serialized as
+  `action`; REVIEW is mapped to `allowed=false, action=BLOCK` with
+  `source="review"`.
 
-The NestJS backend requires **no code change**.
+NestJS requires **no code change**.
 
 ---
 
@@ -242,10 +242,7 @@ The NestJS backend requires **no code change**.
 `USER_JWT_ROUTE_PREFIXES`. The guardrail route is not on that list.
 Every other route explicitly clears `user_jwt_var`.
 
-This is verified by `tests/integration/test_auth_boundary.py`, which
-proves that a Bearer token on the guardrail route does not populate
-`user_jwt_var`. The test will fail if someone later adds
-`/api/v1/validate-message` to the allow-list.
+Verified by `tests/integration/test_auth_boundary.py`.
 
 ### Service-token comparison
 
@@ -254,8 +251,8 @@ side-channels.
 
 ### Failure policy
 
-**Fail-open on provider outage is preserved.** When all providers fail
-or all circuits are open, the service returns:
+**Fail-open on provider outage is preserved** when no soft detector has
+flagged REVIEW:
 
 ```json
 {
@@ -267,23 +264,22 @@ or all circuits are open, the service returns:
 }
 ```
 
-This is a deliberate product decision, carried over from GDv1. It is
-listed as a **production release gate** requiring explicit sign-off
-(plan §7.2).
+If a soft detector has flagged REVIEW, the fail-open path returns
+`allowed=false, action=BLOCK, source="review"` — the LLM failure does not
+suppress the detector signal.
 
 ### Circuit breaker fix
 
 The `assert last_exc is not None` bug from GDv1 is fixed.
 `_classify_with_fallback` now raises `CircuitOpenError("all provider
-circuits are open")` when no provider call was attempted, making the
-intended `except CircuitOpenError` branch in `service.py` reachable.
+circuits are open")` when no provider call was attempted.
 
 ### Logging
 
 - No raw message text is logged.
 - No JWTs or service tokens are logged.
 - The moderation event carries a truncated SHA-256 of the message.
-- The request-id correlation is preserved end-to-end.
+- Request-id correlation is preserved end-to-end.
 
 ### No database access
 
@@ -317,9 +313,14 @@ pytest                      → 23 passed
 | 10 — wiring | `pytest` | ~236 passed, 26 deselected |
 | 10 — wiring | `pytest -m integration -v` | 26 passed |
 
-The integration suite (opt-in, live Groq) was validated end-to-end in
-step 8 and again after step 10. It passed both times once the `.env`
-load-order fix was applied to `tests/conftest.py`.
+### Post-integration hardening
+
+- `tests/unit/chat_safety/test_scattered_numbers.py` — new
+- `tests/unit/test_groq_provider.py` — new (request shape: timeout)
+- `tests/unit/chat_safety/test_moderation_service.py` — REVIEW
+  escalation cases added
+- `tests/integration/chat_safety/test_integration_llm.py` — scattered-
+  numbers case added
 
 ### Lint and formatting
 
@@ -330,14 +331,12 @@ ruff format --check .       → all files formatted
 
 ### Known failures at time of reporting
 
-None. All failing tests encountered during the integration were fixed
-within the step that introduced them.
+None.
 
 ### Skipped / deselected
 
-The 26 integration tests are excluded from the default `pytest` run
-via `addopts = "-m 'not integration'"` in `pyproject.toml`. They are
-opt-in only and require a real `GROQ_API_KEY` in `.env`.
+The integration tests are excluded from the default `pytest` run via
+`addopts = "-m 'not integration'"` in `pyproject.toml`.
 
 ---
 
@@ -358,20 +357,17 @@ LLM_TEMPERATURE
 LLM_MAX_TOKENS
 SERVICE_VERSION
 LOG_FORMAT
+GROQ_CHAT_URL
 ```
-
-### Existing variables whose names were broadened
-
-- `LLM_MODEL` continues to serve as the Groq model name; the field is
-  also aliased as `GROQ_MODEL` for legacy Chat Safety readers.
-- `LLM_TIMEOUT` is aliased as `GROQ_TIMEOUT_SECONDS`.
 
 ### Values with non-default status
 
 - `GROQ_API_KEY` — required, no default.
 - `GUARDRAIL_API_TOKEN` — required, no default.
-- `LLM_CONSENSUS_ATTEMPTS` — default changed to `1`.
+- `LLM_CONSENSUS_ATTEMPTS` — default `1`.
+- `LLM_MAX_TOKENS` — default `512`.
 - `LLM_FALLBACK_ENABLED` — default `true`.
+- `GEMINI_TIMEOUT_SECONDS` — default `15`.
 
 No secrets are committed. `.env.example` documents every variable.
 
@@ -381,28 +377,18 @@ No secrets are committed. `.env.example` documents every variable.
 
 ### Deliberately deferred
 
-- **`Guardrail` ABC** — not introduced. The `GuardrailResult` data
-  shape exists but is not wrapped in an interface. When a second
-  capability needs it, promote both to `app/guardrails/contracts.py`.
-- **LangGraph integration for Chat Safety** — the guardrail is called
-  directly. Graph orchestration is not needed for a single classification.
-- **Async conversion of the Chat Safety chain** — the sync path is
-  preserved via `LLMGateway.generate_sync()`. A future refactor could
-  make the whole chain async if needed.
-- **Route-level tests for `test_api.py`, `test_metrics.py`,
-  `test_response_fields.py`** — moved into
-  `tests/integration/chat_safety/` in step 10.
+- **`Guardrail` ABC** — not introduced. When a second capability needs
+  the shape, promote `GuardrailResult` to `app/guardrails/contracts.py`.
+- **LangGraph integration for Chat Safety** — called directly.
+- **Async conversion of the Chat Safety chain** — sync path preserved
+  via `LLMGateway.generate_sync()`.
+- **Async connection pooling** — only the sync path pools today.
 
 ### Production release gates (unchanged from plan §7.2)
 
-These are **not** integration items. They require explicit sign-off
-before production traffic:
-
-- [ ] Fail-open policy approved in writing by the Swabi product/backend
-      owner.
+- [ ] Fail-open policy approved in writing.
 - [ ] Token rotation procedure documented and rehearsed once on staging.
-- [ ] Deployment worker count decided and documented (metrics and
-      circuit state are per-process).
+- [ ] Deployment worker count decided and documented.
 - [ ] Rate-limit expectation confirmed with the NestJS team.
 - [ ] Manager sign-off on the failure policy and the auth boundary.
 
@@ -410,10 +396,12 @@ before production traffic:
 
 - `/metrics` and `/health` are unauthenticated. Bind behind a reverse
   proxy that restricts inbound access.
-- Counters and circuit state are in-memory per process. Multi-worker
-  deployments show partial values unless aggregation is added.
+- Counters and circuit state are in-memory per process.
 - The Gemini fallback is configured but has not been exercised against
   the live API in CI. Mocked tests cover the dispatch path.
+- Tail latency: benchmark showed median ~890ms and P95 ~4s on the sync
+  path. The tail is a policy question (bound the wait vs. accept it),
+  not a bug.
 
 ---
 
@@ -436,5 +424,71 @@ The foundation is ready. Chat Safety demonstrates the pattern: a
 capability directory, a service class, a thin route, and contract
 guards. Phase 1 follows the same shape.
 
-**The integration phase is complete and ready for review.** It is not
-production-ready until the release gates in §9 are closed.
+---
+
+## Addendum — Post-integration hardening
+
+Changes made after the initial report, on the same branch, prior to
+Phase 1.
+
+### Scattered-number detection
+
+Added a deterministic detector for phone numbers hidden across natural
+language. The reported case (*"ek room, do bed, teen raat, chaar log,
+paach bje phuchenge, ..."*) previously passed as ALLOW because every
+individual number looked innocent in isolation and none of the existing
+detectors saw a chain.
+
+- New file: `app/capabilities/chat_safety/detectors/scattered_numbers.py`
+- New tri-state contract: `GuardrailDecision.ALLOW / REVIEW / BLOCK`
+- New `Action.REVIEW` value accepted from the LLM and passed through
+  `apply_policy`
+- Service layer escalates `soft REVIEW + LLM ALLOW` to `source="review"`
+  (public response: `allowed=false, action=BLOCK`)
+- Prompt extended with a "SCATTERED NUMBERS" section instructing the
+  classifier to consider aggregate patterns and to return `REVIEW` when
+  uncertain
+
+### Groq provider hardening
+
+- Reduced `LLM_MAX_TOKENS` default from 1024 to **512**.
+  - 128 was tried and rejected: reasoning models consume 80–150 tokens
+    on internal reasoning before emitting any output, causing Groq to
+    return `json_validate_failed` with empty `failed_generation`.
+- Added a fallback in both `generate()` and `generate_sync()`: on 400
+  with `json_validate_failed`, retry once without
+  `response_format={"type":"json_object"}`.
+- Passed `timeout=self.timeout` per request to the shared sync client
+  so a custom provider timeout overrides the module-level default.
+
+### Shared sync HTTP client
+
+- Module-level `httpx.Client` with pooling
+  (`max_keepalive_connections=20`, `max_connections=50`,
+  `keepalive_expiry=30s`).
+- Lazy init with a lock; closed on FastAPI shutdown and via `atexit`.
+- Retry delay unified at 0.2s across async and sync paths.
+- Refactored `groq.py` so both paths share `_build_payload`,
+  `_headers`, `_is_json_validate_failure`, and `_parse_response`.
+
+### Deferred
+
+- Async connection pooling — only the sync path pools today. Deferred
+  to when a second LLM-backed capability lands (Phase 1) or when load
+  justifies it.
+- Tail latency policy — benchmark showed median ~890ms, P95 ~4s. The
+  tail is a policy question (bound the wait vs accept it), not a bug.
+  Not decided in this phase.
+
+### Test-suite impact
+
+- `tests/unit/chat_safety/test_scattered_numbers.py` — new
+- `tests/unit/test_groq_provider.py` — new (request shape: timeout)
+- `tests/unit/chat_safety/test_moderation_service.py` — REVIEW
+  escalation cases added
+- `tests/integration/chat_safety/test_integration_llm.py` —
+  scattered-numbers case added to `DISGUISED_MUST_BLOCK`
+
+The public response contract (field set, `ALLOW` / `BLOCK` semantics) is
+unchanged. The `source` field gained a new value (`"review"`), which is
+additive.

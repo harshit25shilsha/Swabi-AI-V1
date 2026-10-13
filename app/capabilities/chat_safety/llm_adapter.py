@@ -13,6 +13,8 @@ name.
 
 from __future__ import annotations
 
+import concurrent.futures
+
 from google import genai
 from google.genai import types as genai_types
 
@@ -21,6 +23,35 @@ from app.core.logging import get_logger
 from app.llm.gateway import LLMGateway
 
 log = get_logger(__name__)
+
+
+def _classify_gemini(self, system: str, user: str) -> str:
+    client = self._get_gemini_client()
+
+    def _call():
+        return client.models.generate_content(
+            model=settings.gemini_model,
+            contents=user,
+            config=genai_types.GenerateContentConfig(
+                system_instruction=system,
+                temperature=settings.llm_temperature,
+                max_output_tokens=settings.llm_max_tokens,
+                response_mime_type="application/json",
+            ),
+        )
+
+    # google-genai retries 503 internally, which can push past 40s.
+    # Enforce our own wall-clock cap so the fail-open path stays bounded.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        future = ex.submit(_call)
+        try:
+            response = future.result(timeout=settings.gemini_timeout_seconds)
+        except concurrent.futures.TimeoutError as exc:
+            raise TimeoutError(
+                f"Gemini wall-clock timeout after {settings.gemini_timeout_seconds}s"
+            ) from exc
+
+    return response.text or "{}"
 
 
 class ChatSafetyLLMAdapter:

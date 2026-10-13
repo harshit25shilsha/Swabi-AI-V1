@@ -12,6 +12,7 @@ Two-layer decision with escalation:
          - LLM ALLOW + soft REVIEW -> REVIEW  (do not drop the signal)
          - LLM ALLOW + soft ALLOW -> ALLOW
 """
+
 from __future__ import annotations
 
 import logging
@@ -53,14 +54,14 @@ logger = logging.getLogger(__name__)
 # Hard detectors — True means BLOCK, LLM is skipped.
 
 _HARD_CHECKS = [
-    (detect_phone,                 ModerationCategory.PHONE_NUMBER,        0.99),
-    (detect_number_word_sequence,  ModerationCategory.PHONE_NUMBER,        0.80),
-    (detect_encoded_digits,        ModerationCategory.PHONE_NUMBER,        0.80),
-    (detect_high_digit_density,    ModerationCategory.PHONE_NUMBER,        0.75),
-    (detect_arithmetic_digits,     ModerationCategory.PHONE_NUMBER,        0.85),
-    (detect_email,                 ModerationCategory.EMAIL,               0.99),
-    (detect_payment,               ModerationCategory.PAYMENT_INFORMATION, 0.97),
-    (detect_url,                   ModerationCategory.EXTERNAL_URL,        0.95),
+    (detect_phone, ModerationCategory.PHONE_NUMBER, 0.99),
+    (detect_number_word_sequence, ModerationCategory.PHONE_NUMBER, 0.80),
+    (detect_encoded_digits, ModerationCategory.PHONE_NUMBER, 0.80),
+    (detect_high_digit_density, ModerationCategory.PHONE_NUMBER, 0.75),
+    (detect_arithmetic_digits, ModerationCategory.PHONE_NUMBER, 0.85),
+    (detect_email, ModerationCategory.EMAIL, 0.99),
+    (detect_payment, ModerationCategory.PAYMENT_INFORMATION, 0.97),
+    (detect_url, ModerationCategory.EXTERNAL_URL, 0.95),
 ]
 
 
@@ -72,6 +73,7 @@ _SOFT_CHECKS = [
 
 
 # Response helpers
+
 
 def _block(category, confidence, *, source, provider=""):
     return ModerationResponse(
@@ -114,6 +116,7 @@ def _review(category, confidence, *, provider=""):
 
 
 # Orchestrator
+
 
 def moderate(raw_message: str) -> ModerationResponse:
     text = normalize(raw_message)
@@ -158,7 +161,9 @@ def moderate(raw_message: str) -> ModerationResponse:
         if soft_decision == GuardrailDecision.REVIEW:
             return _review(soft_category, 0.6)
         return _allow(
-            None, 0.0, source="fail_open",
+            None,
+            0.0,
+            source="fail_open",
         )
     except Exception:
         logger.exception("LLM moderation failed; evaluating fallback")
@@ -166,7 +171,9 @@ def moderate(raw_message: str) -> ModerationResponse:
         if soft_decision == GuardrailDecision.REVIEW:
             return _review(soft_category, 0.6)
         return _allow(
-            None, 0.0, source="fail_open",
+            None,
+            0.0,
+            source="fail_open",
         )
 
     # 4. Policy layer

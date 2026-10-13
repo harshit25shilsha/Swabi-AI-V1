@@ -5,7 +5,7 @@ marketplace. Two capabilities are currently live:
 
 - **AI Foundation** (Phase 0) — shared infrastructure for every capability.
 - **Chat Safety** — marketplace chat moderation (contact-sharing, off-platform
-  transactions, disguised numbers).
+  transactions, disguised numbers, scattered numbers).
 
 The service is called **by** the Swabi NestJS backend and, for user-facing
 routes, by the frontend through NestJS. It **never** accesses the Swabi
@@ -106,7 +106,7 @@ Only `message` is required. Length: 1–4000 chars.
 | `action` | `ALLOW` or `BLOCK` |
 | `category` | Moderation category, or `null` for allow |
 | `confidence` | `0.0`–`1.0` |
-| `source` | `deterministic`, `llm`, or `fail_open` |
+| `source` | `deterministic`, `llm`, `review`, or `fail_open` |
 | `request_id` | Correlates with the `X-Request-ID` response header |
 | `prompt_version` | Version hash of the active system prompt |
 | `provider` | `groq`, `gemini`, or `""` for deterministic decisions |
@@ -114,6 +114,13 @@ Only `message` is required. Length: 1–4000 chars.
 The public response contract is locked by
 `tests/contract/test_chat_safety_contract.py`. Do not add or remove fields
 without coordinating with the NestJS team.
+
+> **`source="review"`** is emitted when a soft detector (currently the
+> scattered-number rule) sees something suspicious but the LLM returns
+> ALLOW. The response surfaces this as `allowed=false, action=BLOCK` with
+> `source="review"` and lower confidence (0.65), so the NestJS caller can
+> distinguish it from a hard block if it wants a different UX. The public
+> field set is unchanged.
 
 ### Categories
 
@@ -123,32 +130,52 @@ without coordinating with the NestJS team.
 
 ### Detection layers
 
-1. **Deterministic** — phone, email, URL, UPI, disguised number runs,
-   arithmetic encoding, high digit density. No LLM call when a detector
-   matches.
-2. **LLM classifier** — Groq with Gemini fallback. Handles contextual intent,
+1. **Hard deterministic** — phone, email, URL, UPI, disguised number runs,
+   arithmetic encoding, high digit density. A match returns BLOCK
+   immediately; the LLM is skipped.
+2. **Soft deterministic** — scattered-number detection. Returns
+   BLOCK / REVIEW / ALLOW based on aggregate chain analysis. A REVIEW
+   signal escalates even when the LLM says ALLOW.
+3. **LLM classifier** — Groq with Gemini fallback. Handles contextual intent,
    obfuscated contact sharing, and mixed-language messages (English, Hindi,
    Hinglish, Devanagari).
-3. **Policy layer** — maps evidence to a final decision.
+4. **Policy layer** — maps evidence to a final decision.
+
+#### Scattered-number detection
+
+Catches phone numbers hidden across natural language — for example:
+
+> *ek room, do bed ke saath, teen raat ke liye, chaar log hain, paach bje
+> phuchenge, das bje khayenge, gyarah bje niklenge, bara bje lunch
+> karenge, pandrah minute late honge.*
+
+Nine numeric tokens embedded in ordinary sentences. Each number looks
+innocent in isolation; the aggregate pattern is the leak. The detector
+analyzes chain length, distinct-value count, and gap between numbers,
+returning:
+
+- `BLOCK` — 8+ distinct values in a chain
+- `REVIEW` — 6–7 distinct values
+- `ALLOW` — fewer, or clearly a quantity list with repeats
+
+The public response maps REVIEW to `allowed=false, action=BLOCK,
+source="review"` so it is delivered as a block. NestJS can distinguish
+soft from hard blocks if needed.
 
 ### Failure policy
 
 When all LLM providers are unavailable (or all provider circuits are open),
-the service **fails open**:
+the service **fails open**, unless a soft detector already flagged REVIEW:
 
-```json
-{
-  "allowed": true,
-  "action": "ALLOW",
-  "category": null,
-  "confidence": 0.0,
-  "source": "fail_open"
-}
-```
+- No REVIEW signal: `allowed=true, action=ALLOW, confidence=0.0,
+  source="fail_open"`
+- REVIEW signal present: `allowed=false, action=BLOCK,
+  source="review"`
 
-> **Production release gate.** This is a deliberate product decision carried
-> over from the original guardrail service. It must be approved in writing by
-> the Swabi product/backend owner before production traffic. See
+> **Production release gate.** The fail-open policy for the no-signal case
+> is a deliberate product decision carried over from the original guardrail
+> service. It must be approved in writing by the Swabi product/backend owner
+> before production traffic. See
 > [`docs/guardrail_integration_plan.md`](docs/guardrail_integration_plan.md) §7.2.
 
 ### Circuit breaker
@@ -156,6 +183,14 @@ the service **fails open**:
 Per-provider. Opens after `LLM_CIRCUIT_FAILURE_THRESHOLD` consecutive
 failures. Half-open probe after `LLM_CIRCUIT_OPEN_SECONDS`. State is
 exposed via `/metrics`.
+
+### Connection pooling
+
+`GroqProvider.generate_sync()` uses a module-level shared `httpx.Client`
+with `max_keepalive_connections=20`, `max_connections=50`, and
+`keepalive_expiry=30s`. The client is created lazily on first use and
+closed on FastAPI shutdown (and again via `atexit` as a safety net). This
+eliminates per-request TCP + TLS handshakes on the Chat Safety path.
 
 ---
 
@@ -302,11 +337,16 @@ Key settings:
 | Variable | Default | Notes |
 |---|---|---|
 | `LLM_MODEL` | `openai/gpt-oss-120b` | Groq model |
+| `GROQ_CHAT_URL` | `https://api.groq.com/openai/v1/chat/completions` | Groq endpoint |
 | `LLM_TIMEOUT` | `60` | Seconds |
 | `LLM_MAX_RETRIES` | `2` | |
+| `LLM_MAX_TOKENS` | `512` | Moderation JSON is small, but reasoning models spend 80–150 tokens on internal reasoning before emitting JSON. 128 caused `json_validate_failed`; 512 leaves headroom. |
+| `LLM_TEMPERATURE` | `0.0` | |
 | `LLM_CONSENSUS_ATTEMPTS` | `1` | Single call per message by default. Raising it requires evaluation evidence. |
 | `LLM_FALLBACK_ENABLED` | `true` | Enables Gemini fallback when a key is present |
 | `GEMINI_API_KEY` | `""` | Empty disables the fallback |
+| `GEMINI_MODEL` | `gemini-2.0-flash` | |
+| `GEMINI_TIMEOUT_SECONDS` | `15` | Wall-clock cap for the fallback |
 | `LLM_CIRCUIT_FAILURE_THRESHOLD` | `5` | |
 | `LLM_CIRCUIT_OPEN_SECONDS` | `60` | |
 | `LOG_FORMAT` | `json` | `json` or `text` |
@@ -380,7 +420,11 @@ docs/
 - Tool base pattern; minimal LangGraph foundation; RAG interface.
 - Request ID correlation, structured logging, safe logging helpers.
 - Redis connection manager.
-- Chat Safety: deterministic detectors + LLM classifier + policy layer.
+- Chat Safety: hard and soft deterministic detectors, LLM classifier,
+  policy layer, REVIEW escalation.
+- Scattered-number detection (aggregate chain analysis with REVIEW
+  escalation).
+- Shared sync `httpx.Client` with connection pooling for Groq calls.
 - Per-provider circuit breakers and fail-open on outage.
 - Evaluation runner + sample dataset.
 - Unit / integration / contract tests.
@@ -394,6 +438,7 @@ docs/
 - Direct database access from Python.
 - A `Guardrail` ABC or plugin registry (deferred until a second capability
   needs it).
+- Async connection pooling (only the sync path pools today).
 
 ---
 
@@ -421,4 +466,3 @@ must be closed (tracked in
   audit performed before the guardrail move.
 - [`docs/phase_guardrail_integration_report.md`](docs/phase_guardrail_integration_report.md) —
   final report for the Chat Safety integration.
-```

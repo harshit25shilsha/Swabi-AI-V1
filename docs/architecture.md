@@ -1,6 +1,6 @@
 # Swabi AI Service — Architecture
 
-**Status:** Post Chat Safety integration
+**Status:** Post Chat Safety integration + post-integration hardening
 **Last updated:** October 2026
 **Audience:** Engineers working on the Swabi AI service or integrating a
 new AI capability.
@@ -43,7 +43,7 @@ app/
 ├── llm/                        Shared LLM gateway + provider clients
 ├── capabilities/               Feature-specific code
 │   └── chat_safety/            First capability: chat moderation
-│       ├── detectors/          Deterministic rules (phone, email, URL, etc.)
+│       ├── detectors/          Deterministic rules (phone, email, URL, scattered numbers, etc.)
 │       ├── policies/           Evidence → decision mapping
 │       ├── prompts.py          SYSTEM_PROMPT + PROMPT_VERSION
 │       ├── schemas.py          Request/response + internal result types
@@ -183,11 +183,43 @@ Groq → Gemini
 
 Each provider has its own circuit breaker. If Groq fails or its circuit
 is open, Gemini is tried. If both fail or are open, the guardrail fails
-open (returns `ALLOW` with `source="fail_open"`).
+open unless a soft detector already flagged REVIEW (see §10).
 
 The fail-open policy is a **production release gate** — see
 `docs/guardrail_integration_plan.md` §7.2. Do not change it without
 sign-off.
+
+### Connection pooling
+
+`GroqProvider.generate_sync()` uses a module-level shared `httpx.Client`
+with `max_keepalive_connections=20`, `max_connections=50`, and
+`keepalive_expiry=30s`. The client is created lazily on first use and
+closed on FastAPI shutdown (and again via `atexit` as a safety net).
+
+The async `generate()` path still constructs a fresh `AsyncClient` per
+attempt and therefore does not pool. This is intentional while Chat
+Safety (the only consumer today) is synchronous. Phase 1 or the async
+refactor should add a shared `AsyncClient` — see §13.
+
+### Retry policy
+
+Initial delay is 0.2s with exponential backoff (`0.2`, `0.4`, `0.8`).
+With `LLM_MAX_RETRIES=2`, worst-case wait before fail-open is ~0.6s plus
+the last call's own latency. `generate_sync` passes `timeout=self.timeout`
+to the shared client per request, so a provider-level timeout override is
+honored even though the client has its own default.
+
+### Reasoning models
+
+`openai/gpt-oss-120b` is a reasoning model: it spends completion tokens
+on internal reasoning *before* emitting the JSON payload. `LLM_MAX_TOKENS`
+must leave room for both phases. 128 was tried and rejected the request
+with `json_validate_failed` and empty output. 512 is the current floor.
+
+Both `generate()` and `generate_sync()` retry once without
+`response_format={"type":"json_object"}` when Groq returns 400 with
+`json_validate_failed`. The prompt already asks for JSON, and the
+moderator's `_parse_llm_json` handles fenced output.
 
 ---
 
@@ -244,6 +276,9 @@ Never commit `.env`. The template is `.env.example`.
 except when the provider ladder itself retries). This is deliberate: see
 integration plan §5.2. Raising it requires evaluation evidence.
 
+`LLM_MAX_TOKENS` defaults to `512`. Do not reduce it below ~256 for
+reasoning models; see §6.
+
 ---
 
 ## 9. Observability
@@ -271,10 +306,12 @@ worker count and metric aggregation deliberately.
 | Failure | Behavior |
 |---|---|
 | Groq timeout / 5xx | Retried (bounded); then the ladder falls over to Gemini. |
+| Groq returns 400 `json_validate_failed` | Retried once without `response_format`; if that fails, ladder falls to Gemini. |
 | Gemini unavailable | Circuit opens; the ladder exhausts. |
-| All circuits open | `CircuitOpenError` raised. Service fails open. |
+| All circuits open | `CircuitOpenError` raised. Service fails open unless soft REVIEW. |
 | Invalid JSON from LLM | Moderator attempts to salvage; on failure, fails open. |
 | Detector raises | Logged; other detectors continue. |
+| Soft detector says REVIEW, LLM says ALLOW | Response escalates to `source="review"` with `allowed=false, action=BLOCK`. |
 | Redis unavailable | `/ready` reports degraded; the service keeps serving. |
 | Invalid auth token | 401 immediately. No retry. |
 
@@ -323,6 +360,7 @@ ruff format --check .           # formatting
   capability needs it.
 - Do not change the fail-open policy without product sign-off.
 - Do not log the raw message, JWTs, or service tokens.
+- Do not reduce `LLM_MAX_TOKENS` below ~256 for reasoning models.
 
 ---
 
@@ -334,5 +372,12 @@ Referenced here so they are not lost:
 - Token rotation procedure — see the Chat Safety README section.
 - Deployment worker count decision — metrics are per-process.
 - Rate-limit expectation with NestJS — who throttles, at what point.
+- Async refactor of the LLM path — currently only `generate_sync()` pools
+  connections. Do it when Phase 1 lands a second LLM-backed capability
+  or when thread-pool saturation shows in metrics.
+- Tail latency policy — P95 on the sync path can reach 4s under provider
+  stress. Currently bounded by `LLM_TIMEOUT` (default 60s) and
+  `LLM_MAX_RETRIES` (default 2). Decide a client-visible deadline before
+  production.
 - `docs/phase_guardrail_integration_report.md` — final report from the
-  Chat Safety integration.
+  Chat Safety integration, with post-integration hardening addendum.

@@ -24,6 +24,7 @@ from app.core.exceptions import (
 )
 from app.core.logging import request_id_var, setup_logging
 from app.core.redis import redis_manager
+from app.llm.groq import close_sync_client
 from app.observability.middleware import ObservabilityMiddleware
 
 setup_logging()
@@ -36,6 +37,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        close_sync_client()
         await redis_manager.close()
 
 
@@ -44,7 +46,6 @@ app = FastAPI(
     version=settings.app_version,
     lifespan=lifespan,
 )
-
 
 # Middleware
 #
@@ -115,13 +116,11 @@ async def request_id_middleware(request: Request, call_next):
     return response
 
 
-
 # Routers
 
 app.include_router(health_router)
 app.include_router(metrics_router)
 app.include_router(chat_safety_router)
-
 
 
 # Centralized exception handlers
