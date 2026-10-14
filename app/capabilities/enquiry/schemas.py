@@ -20,7 +20,7 @@ class DateFlexibility(BaseModel):
     """Mirrors CreateEnquiryDto.dateFlexibility"""
 
     is_flexible: bool | None = None
-    window_days: int | None = Field(default=None, ge=0, le=31)
+    window_days: int | None = Field(default=None, ge=0, le=30)
     note: str | None = None
 
 
