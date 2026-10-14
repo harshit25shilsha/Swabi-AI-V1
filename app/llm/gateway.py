@@ -88,3 +88,42 @@ class LLMGateway:
                     exc,
                 )
         raise AIValidationError(f"LLM did not return valid structured output: {last_error}")
+
+    def generate_structured_sync(
+        self,
+        prompt: str,
+        response_model: type[T],
+        **kwargs: object,
+    ) -> T:
+        """Synchronous mirror of ``generate_structured``.
+
+        Same prompt augmentation, same single retry on validation
+        failure, same exception type. Uses ``generate_sync`` under the
+        hood so a sync call chain (Chat Safety, Enquiry) can request
+        validated JSON without converting to async.
+        """
+        schema = json.dumps(response_model.model_json_schema(), indent=2)
+        structured_prompt = (
+            f"{prompt}\n\n"
+            "Respond ONLY with valid JSON that matches this JSON schema. "
+            "Do not include markdown fences or commentary.\n\n"
+            f"JSON schema:\n{schema}"
+        )
+
+        last_error: Exception | None = None
+        for attempt in range(2):
+            response = self.generate_sync(
+                structured_prompt,
+                json_mode=True,
+                **kwargs,
+            )
+            try:
+                return response_model.model_validate_json(response.content)
+            except ValidationError as exc:
+                last_error = exc
+                log.warning(
+                    "Structured output validation failed (attempt %d): %s",
+                    attempt + 1,
+                    exc,
+                )
+        raise AIValidationError(f"LLM did not return valid structured output: {last_error}")
