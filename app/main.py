@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.api.routes.chat_safety import router as chat_safety_router
+from app.api.routes.enquiry import router as enquiry_router
 from app.api.routes.health import router as health_router
 from app.api.routes.metrics import router as metrics_router
 from app.core.auth_context import set_user_id, set_user_jwt
@@ -121,6 +122,7 @@ async def request_id_middleware(request: Request, call_next):
 app.include_router(health_router)
 app.include_router(metrics_router)
 app.include_router(chat_safety_router)
+app.include_router(enquiry_router)
 
 
 # Centralized exception handlers

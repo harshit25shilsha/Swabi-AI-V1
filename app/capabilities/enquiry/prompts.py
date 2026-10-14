@@ -29,7 +29,13 @@ FIELDS
 - destination: city or region only. null if not mentioned.
 
 - travel_date: date in the format dd/mm/yy. null if not mentioned.
-- travel_date_end: end date in dd/mm/yy, only if the user gave a range. Otherwise null.
+- travel_date_end: end date in dd/mm/yy.
+  If the user gives an end date or date range, extract it.
+  If travel_date and duration_days are known, calculate the final
+  calendar day as travel_date + duration_days - 1.
+  If travel_date and duration_nights are known, calculate the
+  checkout date as travel_date + duration_nights.
+  Otherwise, return null.
 - date_flexibility: {"is_flexible": bool|null, "window_days": int|null, "note": str|null} or null.
                     "flexible +/- 3 days" -> {"is_flexible":true,"window_days":3,"note":null}
 - duration_days: int or null.
