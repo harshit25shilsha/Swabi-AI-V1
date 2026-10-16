@@ -16,7 +16,37 @@ python-dotenv>=1.0.0
 # Google GenAI SDK is used for the Chat Safety Gemini fallback.
 google-genai>=1.0.0
 
+# ---------------------------------------------------------------------------
+# Chat Safety
+# ---------------------------------------------------------------------------
+# (uses fastapi + httpx + redis already listed above; no extra deps)
+
+# ---------------------------------------------------------------------------
+# Enquiry Understanding
+# ---------------------------------------------------------------------------
+# (uses fastapi + httpx + redis already listed above; no extra deps)
+
+# ---------------------------------------------------------------------------
+# RAG ingestion + retrieval — Phase 2
+# ---------------------------------------------------------------------------
+# YAML config for knowledge_sections.yaml
+pyyaml>=6.0
+
+# Optional RAG extras. The application must run without them:
+#   * ingestion in non-release mode works without fastembed/numpy
+#   * retrieval degrades to keyword-only (BM25) when embeddings are absent
+#   * --release ingestion and Qdrant indexing require these
+#
+# Install explicitly when ready for indexed release:
+#   pip install -r requirements-rag.txt
+#
+# fastembed>=0.4.0
+# numpy>=1.26.0
+# qdrant-client>=1.9.0
+
+# ---------------------------------------------------------------------------
 # Dev / test
+# ---------------------------------------------------------------------------
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
 ruff>=0.3.0

@@ -41,9 +41,7 @@ class SourceNode:
     children: list[SourceNode] = field(default_factory=list)
 
 
-# ---------------------------------------------------------------------------
 # Normalisation + hashing
-# ---------------------------------------------------------------------------
 
 
 def normalise_text(text: str) -> str:
@@ -57,9 +55,8 @@ def sha256_of(text: str) -> str:
     return hashlib.sha256(normalise_text(text).encode("utf-8")).hexdigest()
 
 
-# ---------------------------------------------------------------------------
 # Fenced-code detection
-# ---------------------------------------------------------------------------
+
 
 
 def _opening_fence(line: str) -> str | None:
@@ -94,9 +91,7 @@ def _closes_fence(line: str, opening_marker: str) -> bool:
     return marker[0] == opening_marker[0] and len(marker) >= len(opening_marker)
 
 
-# ---------------------------------------------------------------------------
 # Parsing
-# ---------------------------------------------------------------------------
 
 
 def parse_markdown(text: str) -> SourceNode:
@@ -165,9 +160,7 @@ def parse_markdown(text: str) -> SourceNode:
     return root
 
 
-# ---------------------------------------------------------------------------
 # Tree queries
-# ---------------------------------------------------------------------------
 
 
 def find_by_section_id(node: SourceNode, section_id: str) -> SourceNode | None:
@@ -222,3 +215,32 @@ def validate_unique_section_ids(root: SourceNode) -> None:
     if dups:
         parts = [f"{sid} (levels {lvl})" for sid, lvl in sorted(dups.items())]
         raise SourceError("source markdown contains duplicate section ids: " + ", ".join(parts))
+
+def validate_unique_titles_within_parents(
+    root: SourceNode,
+    split_parent_ids: set[str],
+) -> None:
+    """Raise SourceError if any split parent has two descendant subheadings
+    with the same title. Only split parents are checked — for other parents
+    title collisions are harmless because resolution is by section_id.
+
+    `split_parent_ids` is the set of section ids in the config that have
+    a `split_into` field.
+    """
+    problems: list[str] = []
+    for sid in sorted(split_parent_ids):
+        node = find_by_section_id(root, sid)
+        if node is None:
+            continue  # reported elsewhere
+        seen: dict[str, int] = {}
+        for desc in iter_descendants(node):
+            seen[desc.title] = seen.get(desc.title, 0) + 1
+        dupes = {t: c for t, c in seen.items() if c > 1}
+        if dupes:
+            problems.append(f"{sid}: duplicate subheading titles {sorted(dupes)}")
+
+    if problems:
+        raise SourceError(
+            "source markdown has duplicate subheading titles under a split "
+            "parent: " + "; ".join(problems)
+        )

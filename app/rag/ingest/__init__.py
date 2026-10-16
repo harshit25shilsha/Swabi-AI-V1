@@ -1,14 +1,18 @@
-"""RAG knowledge ingestion package.
-
-Modules:
-    source  — parse markdown, normalise text, hash
-    config  — load and validate knowledge_sections.yaml  (batch 2)
-    chunker — walk config + tree, produce chunks         (batch 2)
-    writer  — write artifacts to disk                    (batch 2)
-
-The thin CLI lives at scripts/ingest_knowledge.py.
-"""
-
+"""RAG knowledge ingestion package."""
+from app.rag.ingest.chunker import ChunkBuildResult, build_chunks
+from app.rag.ingest.config import (
+    ConfigError,
+    collect_review_flags,
+    excluded_section_ids,
+    load_config,
+    validate_config,
+)
+from app.rag.ingest.render import (
+    RenderError,
+    render_claim,
+    render_leaf_body,
+    split_body,
+)
 from app.rag.ingest.source import (
     SourceError,
     SourceNode,
@@ -21,23 +25,29 @@ from app.rag.ingest.source import (
     parse_markdown,
     sha256_of,
     validate_unique_section_ids,
+    validate_unique_titles_within_parents,
+)
+from app.rag.ingest.writer import (
+    CURRENT_NAME,
+    PublishError,
+    compute_index_version,
+    current_version,
+    publish,
 )
 
-# Bump when the chunking or parsing logic changes in a way that
-# affects produced artifacts. Included in index_version.
 PIPELINE_VERSION = "1"
 
 __all__ = [
     "PIPELINE_VERSION",
-    "SourceError",
-    "SourceNode",
-    "find_by_section_id",
-    "find_duplicate_section_ids",
-    "find_subheading",
-    "has_preamble",
-    "iter_descendants",
-    "normalise_text",
-    "parse_markdown",
-    "sha256_of",
-    "validate_unique_section_ids",
+    "ChunkBuildResult", "build_chunks",
+    "ConfigError", "collect_review_flags", "excluded_section_ids",
+    "load_config", "validate_config",
+    "RenderError", "render_claim", "render_leaf_body", "split_body",
+    "SourceError", "SourceNode",
+    "find_by_section_id", "find_duplicate_section_ids", "find_subheading",
+    "has_preamble", "iter_descendants", "normalise_text", "parse_markdown",
+    "sha256_of", "validate_unique_section_ids",
+    "CURRENT_NAME", "PublishError", "compute_index_version",
+    "current_version", "publish",
+    "validate_unique_titles_within_parents"
 ]

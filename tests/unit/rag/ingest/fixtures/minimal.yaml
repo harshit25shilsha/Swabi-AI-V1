@@ -1,0 +1,33 @@
+version: "1.0.0"
+source_document: "Fixture Document"
+source_version: "1.0"
+source_format: markdown
+source_path: tests/unit/rag/ingest/fixtures/minimal.md
+source_hash_expected: null
+default_source: "Fixture KB"
+last_updated: "2026-10"
+
+categories:
+  - "FIRST"
+  - "SECOND"
+
+sections:
+  - id: "1.1"
+    title: "Alpha"
+    category: "FIRST"
+    area: swabi
+    audience: both
+
+  - id: "1.2"
+    title: "Beta"
+    category: "FIRST"
+    area: swabi
+    audience: both
+
+  - id: "2.1"
+    title: "Gamma"
+    category: "SECOND"
+    area: travel
+    audience: both
+    skip_subsections:
+      - "Skipped subsection"

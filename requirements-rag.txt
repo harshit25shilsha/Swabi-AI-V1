@@ -1,0 +1,16 @@
+# Optional RAG stack. Install with:
+#   pip install -r requirements-rag.txt
+#
+# Without these:
+#   * ingestion runs in non-release mode (no embeddings written)
+#   * retrieval degrades to keyword-only (BM25)
+#   * --release blocks and Qdrant indexing is unavailable
+
+# Local multilingual embeddings (ONNX runtime, no PyTorch, ~120 MB)
+fastembed>=0.4.0
+
+# Array math for the embedding artifacts
+numpy>=1.26.0
+
+# Qdrant client (talks to a Qdrant server; does not bundle one)
+qdrant-client>=1.9.0
