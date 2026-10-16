@@ -1,0 +1,52 @@
+version: "1.0.0"
+source_document: "Fixture KB"
+source_version: "1.0"
+source_format: markdown
+source_path: tests/unit/rag/fixtures/minimal.md
+source_hash_expected: null
+default_source: "Fixture KB"
+last_updated: "2026-10"
+
+categories:
+  - "A"
+  - "Travel"
+
+excluded_sections:
+  - id: "9.9"
+
+sections:
+  - id: "1.1"
+    title: "Alpha"
+    category: "A"
+    area: swabi
+    audience: both
+
+  - id: "2.3"
+    title: "Beta"
+    category: "A"
+    area: swabi
+    audience: vendor
+    skip_subsections:
+      - "Plan discounts (proposed redesign)"
+
+  - id: "9.1"
+    title: "Destinations"
+    category: "Travel"
+    area: travel
+    split_into:
+      - id: "9.1.kashmir"
+        title: "Kashmir"
+        category: "Travel"
+        area: travel
+        audience: both
+        destination: "Kashmir"
+        includes_subsections:
+          - "Kashmir (India)"
+      - id: "9.1.goa"
+        title: "Goa"
+        category: "Travel"
+        area: travel
+        audience: both
+        destination: "Goa"
+        includes_subsections:
+          - "Goa (India)"

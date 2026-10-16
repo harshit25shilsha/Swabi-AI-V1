@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     llm_max_retries: int = 2
 
     llm_temperature: float = 0.0
-    llm_max_tokens: int = 1024
+    llm_max_tokens: int = 512
     llm_consensus_attempts: int = 1  # integration plan 5.2
     llm_fallback_enabled: bool = True
 
