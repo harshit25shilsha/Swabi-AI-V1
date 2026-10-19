@@ -34,6 +34,7 @@ def _manifest(version: str, count: int = 1) -> IndexVersion:
         index_version=version, pipeline_version="2A1",
         source_path="x.md", source_hash="a" * 64, source_version="1.0",
         config_hash="b" * 64, chunk_size_cap=4000,
+        embedding_model="test_model",
         release=False, chunk_count=count,
     )
 

@@ -85,6 +85,7 @@ class IndexVersion(BaseModel):
     source_version: str
     config_hash: str
     chunk_size_cap: int
+    embedding_model: str | None = None
     release: bool = False
     chunk_count: int
 

@@ -76,6 +76,16 @@ class Settings(BaseSettings):
     # Upper-case aliases — for guardrail code (GDv1) that reads
     # settings.GROQ_API_KEY etc. Lower-case field names remain canonical.
 
+# RAG — embeddings + Qdrant
+    qdrant_url: str = "http://localhost:6333"
+    qdrant_api_key: str = ""
+    qdrant_collection: str = "swabi_chunks"
+    qdrant_timeout: int = 30
+
+    rag_embedding_model: str = "intfloat/multilingual-e5-small"
+    rag_embedding_dim: int = 384
+    rag_embedding_batch_size: int = 32
+
     @property
     def GROQ_API_KEY(self) -> str:
         return self.groq_api_key

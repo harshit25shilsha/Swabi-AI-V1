@@ -25,6 +25,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from app.core.config import settings
 from app.rag.config import (
     ConfigError,
     collect_review_flags,
@@ -337,14 +338,16 @@ def _compute_version(
     config_hash: str,
     chunk_size_cap: int,
     release: bool,
+    embedding_model: str,
 ) -> str:
     digest = hashlib.sha256()
     for part in (
-        "swabi-rag-index/v2a2",
+        "swabi-rag-index/v2a1",
         source_hash,
         config_hash,
         str(chunk_size_cap),
         "1" if release else "0",
+        embedding_model,
     ):
         digest.update(part.encode("utf-8"))
         digest.update(b"|")
@@ -448,9 +451,9 @@ def ingest(
         buckets[leaf_id].append((path, document.page_content))
         bucket_path.setdefault(leaf_id, path)
 
-    
+
     # One chunk per leaf; split only when oversized.
-    
+
     for leaf_id, items in buckets.items():
         spec = leaves[leaf_id]
         path = bucket_path[leaf_id]
@@ -554,6 +557,7 @@ def ingest(
         config_hash=config_hash,
         chunk_size_cap=chunk_size_cap,
         release=release,
+        embedding_model=settings.rag_embedding_model,
     )
 
     manifest = IndexVersion(
@@ -564,6 +568,7 @@ def ingest(
         source_version=cfg["source_version"],
         config_hash=config_hash,
         chunk_size_cap=chunk_size_cap,
+        embedding_model=settings.rag_embedding_model,
         release=release,
         chunk_count=len(chunks),
     )

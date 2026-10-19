@@ -62,15 +62,32 @@ def test_chunk_id_deterministic():
 
 
 def test_version_covers_cap_and_release():
-    a = _compute_version(source_hash="a" * 64, config_hash="b" * 64,
-                         chunk_size_cap=4000, release=False)
-    b = _compute_version(source_hash="a" * 64, config_hash="b" * 64,
-                         chunk_size_cap=1000, release=False)
-    c = _compute_version(source_hash="a" * 64, config_hash="b" * 64,
-                         chunk_size_cap=4000, release=True)
+    common = dict(
+        source_hash="a" * 64,
+        config_hash="b" * 64,
+        release=False,
+        embedding_model="test-model",
+    )
+    a = _compute_version(chunk_size_cap=4000, **common)
+    b = _compute_version(chunk_size_cap=1000, **common)
+    c = _compute_version(
+        source_hash="a" * 64, config_hash="b" * 64,
+        chunk_size_cap=4000, release=True,
+        embedding_model="test-model",
+    )
     assert a != b and a != c
 
 
+def test_version_covers_embedding_model():
+    base = dict(
+        source_hash="a" * 64,
+        config_hash="b" * 64,
+        chunk_size_cap=4000,
+        release=False,
+    )
+    a = _compute_version(embedding_model="model-a", **base)
+    b = _compute_version(embedding_model="model-b", **base)
+    assert a != b
 def test_release_blocks_on_unconfirmed_flags(tmp_path):
     import copy
 
