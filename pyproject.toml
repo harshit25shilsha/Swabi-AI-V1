@@ -22,6 +22,8 @@ markers = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# The Chat Safety SYSTEM_PROMPT is a single opaque string whose bytes are
-# hashed into PROMPT_VERSION. It must not be reformatted.
+# Prompts are single opaque strings whose bytes are hashed into a
+# version identifier. They must not be reflowed by line-length rules.
 "app/capabilities/chat_safety/prompts.py" = ["E501"]
+"app/capabilities/enquiry/prompts.py" = ["E501"]
+"app/capabilities/support/prompts.py" = ["E501"]

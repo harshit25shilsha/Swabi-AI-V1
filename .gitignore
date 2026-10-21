@@ -113,3 +113,26 @@ appendonlydir/
 # ---------------------------------------------------------------------------
 *.whl
 *.tar.gz
+
+# ---------------------------------------------------------------------------
+# RAG ingestion artifacts (Phase 2) — generated, not source
+# ---------------------------------------------------------------------------
+# The whole published index directory is a runtime artifact. The source
+# (config/knowledge_sections.yaml and docs/knowledge_base.md) is committed;
+# the built chunks, manifests, reports, and embeddings are not.
+data/rag_index/
+*.staging-*
+
+# ---------------------------------------------------------------------------
+# RAG embeddings + Qdrant (Phase 2B)
+# ---------------------------------------------------------------------------
+# Local embedding model cache (fastembed / HuggingFace).
+.cache/
+.fastembed_cache/
+.huggingface/
+
+# Embedded Qdrant storage if run without Docker.
+qdrant_storage/
+
+# Standalone embedding artifacts produced outside data/rag_index/
+*.npy
