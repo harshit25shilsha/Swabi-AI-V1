@@ -6,7 +6,7 @@ from typing import Any
 
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.rag.schemas import Chunk
+from app.rag.schemas import Chunk, RetrievedChunk
 
 log = get_logger(__name__)
 
@@ -192,6 +192,62 @@ class QdrantStore:
         except Exception as exc:  # noqa: BLE001
             log.warning("delete_collection %s failed: %s", name, exc)
 
+    def search(
+        self,
+        query_vector: list[float],
+        *,
+        top_k: int = 5,
+        audience: str | None = None,
+        area: str | None = None,
+        min_score: float | None = None,
+    ) -> list[RetrievedChunk]:
+        """Vector search through the alias (always the current version).
+
+        Filtering by audience and area happens inside Qdrant before
+        ranking. ``audience="customer"`` matches chunks with
+        audience=customer OR audience=both; a customer never receives
+        vendor-only content.
+        """
+        from qdrant_client.http import models as rest  # noqa: PLC0415
+
+        from app.rag.schemas import RetrievedChunk  # noqa: PLC0415
+
+        client = self._get_client()
+
+        must: list = []
+        if audience and audience != "both":
+            must.append(rest.FieldCondition(
+                key="audience",
+                match=rest.MatchAny(any=[audience, "both"]),
+            ))
+        if area and area != "both":
+            must.append(rest.FieldCondition(
+                key="area",
+                match=rest.MatchAny(any=[area, "both"]),
+            ))
+        query_filter = rest.Filter(must=must) if must else None
+
+        response = client.query_points(
+            collection_name=self.alias_name(),
+            query=query_vector,
+            limit=top_k,
+            query_filter=query_filter,
+            score_threshold=min_score,
+            with_payload=True,
+        )
+        hits = response.points
+
+        out: list[RetrievedChunk] = []
+        for hit in hits:
+            payload = hit.payload or {}
+            out.append(RetrievedChunk(
+                chunk_id=str(payload.get("chunk_id", "")),
+                section_id=str(payload.get("section_id", "")),
+                section_path=str(payload.get("section_path", "")),
+                text=str(payload.get("text", "")),
+                score=float(hit.score),
+            ))
+        return out
 
 
 # Helpers

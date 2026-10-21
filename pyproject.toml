@@ -26,3 +26,4 @@ markers = [
 # version identifier. They must not be reflowed by line-length rules.
 "app/capabilities/chat_safety/prompts.py" = ["E501"]
 "app/capabilities/enquiry/prompts.py" = ["E501"]
+"app/capabilities/support/prompts.py" = ["E501"]

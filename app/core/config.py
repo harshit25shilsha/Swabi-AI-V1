@@ -86,6 +86,10 @@ class Settings(BaseSettings):
     rag_embedding_dim: int = 384
     rag_embedding_batch_size: int = 32
 
+    # Rag Retrieval + answer
+    rag_top_k : int = 5
+    rag_min_score: float = 0.45
+
     @property
     def GROQ_API_KEY(self) -> str:
         return self.groq_api_key

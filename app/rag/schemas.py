@@ -109,3 +109,12 @@ class IngestionReport(BaseModel):
     known_gaps: dict[str, list[str]] = Field(default_factory=dict)
     review_flags: list[ReviewFlag] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+
+
+class RetrievedChunk(BaseModel):
+    """One chunk returned from retrieval, before it becomes a citation."""
+    chunk_id: str
+    section_id: str
+    section_path: str
+    text: str
+    score: float
