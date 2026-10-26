@@ -90,6 +90,11 @@ class Settings(BaseSettings):
     rag_top_k : int = 5
     rag_min_score: float = 0.45
 
+    # Swabi backend response encryption (CryptoJS AES)
+    # Leave empty if the backend returns plain JSON.
+    swabi_response_passphrase: str = ""
+    swabi_response_kdf: str = "md5"  # "md5" (CryptoJS default) or "sha256"
+
     @property
     def GROQ_API_KEY(self) -> str:
         return self.groq_api_key

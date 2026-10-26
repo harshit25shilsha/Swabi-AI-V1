@@ -40,6 +40,9 @@ class SupportAskResponse(BaseModel):
     request_id: str = ""
     provider: str = ""
     prompt_version: str = ""
+    live_data_used: bool = False
+    live_data_sources: list[str] = Field(default_factory=list)
+    live_data_warning: str | None = None
 
 
 class LLMAnswerOutput(BaseModel):
