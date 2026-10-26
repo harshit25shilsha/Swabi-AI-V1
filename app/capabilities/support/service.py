@@ -293,7 +293,8 @@ def ask(
         # Fetch.
         try:
             endpoint_label, payload = fetch_for_intent(
-                resolved.intent, user_jwt=user_jwt
+                resolved.intent, user_jwt=user_jwt,
+                entities=resolved.entities,
             )
             live_text = format_for_intent(resolved.intent, payload)
             live_data_used = True
@@ -427,6 +428,26 @@ def ask(
             knowledge_version=version.local_version,
             live_data_used=live_data_used,
             live_data_sources=live_data_sources,
+        )
+
+    if (
+        live_data_used
+        and live_text
+        and llm_out.answer_type == AnswerType.INSUFFICIENT_CONTEXT
+    ):
+        log.warning(
+            "support_live_data_answer_fallback",
+            extra={
+                "q_hash": q_hash,
+                "intent": resolved.intent.value,
+                "intent_source": resolved.source,
+            },
+        )
+        llm_out = LLMAnswerOutput(
+            answer_type=AnswerType.ANSWERED,
+            answer=f"I found your live information:\n{live_text}",
+            citation_chunk_ids=[],
+            confidence=0.7,
         )
 
     # ------------------------------------------------------------------

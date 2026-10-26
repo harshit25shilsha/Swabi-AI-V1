@@ -184,3 +184,96 @@ def test_policy_question_no_live_data(
     )
     assert r.live_data_used is False
     assert r.live_data_sources == []
+
+def test_booking_detail_uses_live_data_without_rag_chunks(
+    retriever, patch_version_ok, patch_gateway
+):
+    booking_id = "46f46148-e88d-42b6-bbd4-d87f14009f65"
+    fake_payload = {
+        "booking": {
+            "id": booking_id,
+            "bookingCode": "BK-8941",
+            "bookingType": "package",
+            "package": {"name": "Kashmir Tour"},
+            "startDate": "2026-11-01T00:00:00Z",
+            "endDate": "2026-11-07T00:00:00Z",
+            "status": "upcoming",
+            "paymentStatus": "paid",
+            "amount": "25000",
+            "currency": "INR",
+        }
+    }
+
+    with patch(
+        "app.capabilities.support.service.fetch_for_intent",
+        return_value=("GET /api/bookings/my/{id}", fake_payload),
+    ):
+        result = ask(
+            SupportAskRequest(
+                question=f"What is the status of booking {booking_id}?",
+                audience=Audience.CUSTOMER,
+            ),
+            retriever=retriever,
+            user_jwt="test-user-jwt",
+        )
+
+    assert result.answer_type == AnswerType.ANSWERED
+    assert result.live_data_used is True
+    assert result.live_data_sources == ["GET /api/bookings/my/{id}"]
+    assert "upcoming" in result.answer.lower()
+    retriever.search.assert_not_called()
+
+    prompt_sent_to_llm = (
+        patch_gateway.generate_structured_sync.call_args.kwargs["prompt"]
+    )
+    assert "LIVE DATA" in prompt_sent_to_llm
+    assert "BK-8941" in prompt_sent_to_llm
+    assert "- Booking status: upcoming" in prompt_sent_to_llm
+    
+    
+def test_booking_detail_insufficient_context_falls_back_to_live_data(
+    retriever, patch_version_ok, patch_gateway
+):
+    booking_id = "46f46148-e88d-42b6-bbd4-d87f14009f65"
+
+    patch_gateway.generate_structured_sync.return_value = LLMAnswerOutput(
+        answer_type=AnswerType.INSUFFICIENT_CONTEXT,
+        answer="I don't have enough context.",
+        citation_chunk_ids=[],
+        confidence=0.0,
+    )
+
+    fake_payload = {
+        "booking": {
+            "id": booking_id,
+            "bookingCode": "BK-8941",
+            "bookingType": "package",
+            "package": {"name": "Kashmir Tour"},
+            "startDate": "2026-11-01T00:00:00Z",
+            "endDate": "2026-11-07T00:00:00Z",
+            "status": "upcoming",
+            "paymentStatus": "paid",
+            "amount": "25000",
+            "currency": "INR",
+        }
+    }
+
+    with patch(
+        "app.capabilities.support.service.fetch_for_intent",
+        return_value=("GET /api/bookings/my/{id}", fake_payload),
+    ):
+        result = ask(
+            SupportAskRequest(
+                question=f"What is the status of booking {booking_id}?",
+                audience=Audience.CUSTOMER,
+            ),
+            retriever=retriever,
+            user_jwt="test-user-jwt",
+        )
+
+    assert result.answer_type == AnswerType.ANSWERED
+    assert result.live_data_used is True
+    assert result.live_data_sources == ["GET /api/bookings/my/{id}"]
+    assert "BK-8941" in result.answer
+    assert "upcoming" in result.answer.lower()
+    retriever.search.assert_not_called()

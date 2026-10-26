@@ -1,15 +1,12 @@
 """LLM-based intent classifier for support questions.
 
 Used as a fallback when the deterministic classifier does not match a
-question. Returns a structured intent + entities, or None on any failure.
+question. Returns a structured intent and extracted entities, or None
+when classification fails or confidence is too low.
 
-The LLM classifier does NOT enforce audience scope. It returns the intent
-that best matches the question, even if the audience is wrong. The service
-layer enforces scope: customer-only intents requested by a vendor (or vice
-versa) return a scope-mismatch message instead of executing the fetch.
-
-This split is deliberate. The LLM's only job is "what does the user want?"
-The service's job is "are they allowed to have it?"
+The classifier identifies the user's goal; it does not authorize access
+or call APIs. The support service checks audience and authentication,
+then dispatches only to explicitly implemented fetchers.
 """
 from __future__ import annotations
 
@@ -26,38 +23,77 @@ log = logging.getLogger(__name__)
 
 MIN_CONFIDENCE = 0.7
 
-_SYSTEM_PROMPT = """You classify customer or vendor support questions about Swabi, a travel bidding marketplace, into live-data intents.
+_SYSTEM_PROMPT = """You classify customer or vendor support questions about Swabi,
+a travel marketplace, into one supported live-data intent.
 
-Return ONLY a JSON object with three fields:
-- "intent": one of the intent names below, or "none"
-- "entities": an object with any IDs, destinations, or names you extracted (may be empty)
+Return ONLY a JSON object with exactly these fields:
+- "intent": one of the intent names listed below, or "none"
+- "entities": an object containing only values explicitly stated or clearly
+  implied by the question; it may be empty
 - "confidence": a number between 0.0 and 1.0
 
 Do NOT answer the question. Do NOT explain. Return JSON only.
+Never invent IDs, destinations, dates, filters, or other entity values.
+Never create an intent that is not listed below.
 
 CUSTOMER INTENTS (only meaningful when audience is "customer"):
-- my_bookings: the user wants to see their own bookings or trips
-- my_payments: the user wants their payment history
-- my_coins: the user wants their Swabi coin balance
-- my_coin_history: the user wants their Swabi coin transaction history
-- my_enquiries: the user wants their posted enquiries or trip requests
+- my_bookings: list or filter the user's own bookings or trips.
+  If the user asks for pending, upcoming, or cancelled bookings, extract
+  "status" with that value.
+- my_booking_detail: details or status for one specific booking.
+  Extract its UUID as "booking_id" when present. Do not use a booking code
+  as a UUID.
+- my_payments: the user's payment history.
+  Extract "status" when the user asks for pending, completed, cancelled,
+  or failed payments.
+- my_enquiry_bids: bids or proposals received on one of the user's enquiries.
+  Extract the enquiry UUID as "enquiry_id" when present.
+- my_coins: the user's Swabi coin balance.
+- my_coin_history: the user's Swabi coin transaction history.
+- my_enquiries: the user's posted enquiries or trip requests.
+
+PUBLIC CATALOGUE INTENT:
+- package_search: search the current public package catalogue.
+  Extract "query" as a short search phrase, such as a destination or package
+  name, when the user specifies one.
+  For a general browse request, return "query" as an empty string.
+  Do not claim that packages are new, available, or bookable unless those
+  properties are returned by the backend.
 
 VENDOR INTENTS (only meaningful when audience is "vendor"):
-- vendor_wallet: the user wants their vendor wallet balance
-- vendor_transactions: the user wants their vendor wallet transaction ledger
-- vendor_withdrawals: the user wants their withdrawal requests
-- vendor_inquiries: the user wants enquiries they can bid on
-- vendor_bookings: the user wants their vendor-side bookings
-- vendor_bids: the user wants the bids they placed
-- vendor_subscription: the user wants their subscription / plan status
+- vendor_wallet: the user's vendor wallet balance.
+- vendor_transactions: the user's vendor wallet transaction ledger.
+- vendor_withdrawals: the user's withdrawal requests.
+- vendor_inquiries: enquiries the vendor can bid on.
+  Extract "destination" when the user specifies one.
+- vendor_bookings: the vendor's bookings or trips they are serving.
+- vendor_bids: bids the vendor placed.
+- vendor_subscription: the vendor's subscription or plan status.
 
 Use intent "none" when:
-- The question is about platform policy, cancellation, refunds, escrow, commissions, or any procedural knowledge.
-- The question is general travel knowledge (destinations, activities, tips).
-- The question is clearly out of scope for Swabi.
-- The question does not need user-specific or current data.
+- The question is about platform policy, cancellation, refunds, escrow,
+  commissions, or procedural knowledge that does not need current account data.
+- The question is general travel knowledge, such as destinations, activities,
+  or travel tips.
+- The question is clearly outside Swabi and travel support.
+- The question does not require user-specific or current marketplace data.
 
-The "audience" is provided. Use it to inform which intents to consider, but if the question is clearly the wrong scope (a customer asking about vendor wallets), still return the matching intent. The service layer handles the scope mismatch.
+AUDIENCE AND SCOPE:
+The audience is provided in the user message as "customer" or "vendor".
+Use it to interpret the request, but if the question clearly asks for data
+from the other role, return that matching role's intent. The service layer
+will enforce audience scope and must not execute a cross-role request.
+The package_search intent is public catalogue data, not customer- or
+vendor-private data.
+
+ENTITY RULES:
+- For booking detail, use {"booking_id": "<UUID>"} only when a UUID is present.
+- For enquiry bids, use {"enquiry_id": "<UUID>"} only when a UUID is present.
+- For list filters, use {"status": "<supported status>"} only when the user
+  asks for that status.
+- For package_search, use {"query": "<search phrase>"}; use an empty string
+  for an unfiltered catalogue request.
+- Do not put a whole sentence or the user's question into an entity value.
 
 Examples:
 
@@ -65,21 +101,37 @@ Audience: customer
 Question: "What is the status of my last booked trip?"
 Output: {"intent":"my_bookings","entities":{},"confidence":0.95}
 
-Audience: vendor
-Question: "How much can I withdraw from my wallet?"
-Output: {"intent":"vendor_wallet","entities":{},"confidence":0.9}
+Audience: customer
+Question: "Show my pending packages"
+Output: {"intent":"my_bookings","entities":{"status":"pending"},"confidence":0.92}
 
 Audience: customer
-Question: "What is the cancellation policy for October?"
+Question: "What is the status of booking 46f46148-e88d-42b6-bbd4-d87f14009f65?"
+Output: {"intent":"my_booking_detail","entities":{"booking_id":"46f46148-e88d-42b6-bbd4-d87f14009f65"},"confidence":0.97}
+
+Audience: customer
+Question: "Who bid on my enquiry 46f46148-e88d-42b6-bbd4-d87f14009f65?"
+Output: {"intent":"my_enquiry_bids","entities":{"enquiry_id":"46f46148-e88d-42b6-bbd4-d87f14009f65"},"confidence":0.95}
+
+Audience: customer
+Question: "Are there new packages available?"
+Output: {"intent":"package_search","entities":{"query":""},"confidence":0.90}
+
+Audience: customer
+Question: "Show me packages in Goa"
+Output: {"intent":"package_search","entities":{"query":"Goa"},"confidence":0.94}
+
+Audience: customer
+Question: "What is the cancellation policy?"
 Output: {"intent":"none","entities":{},"confidence":0.95}
 
 Audience: customer
 Question: "Show me my vendor wallet balance"
 Output: {"intent":"vendor_wallet","entities":{},"confidence":0.85}
 
-Audience: customer
-Question: "Which packages have I purchased recently?"
-Output: {"intent":"my_bookings","entities":{},"confidence":0.92}
+Audience: vendor
+Question: "How much can I withdraw from my wallet?"
+Output: {"intent":"vendor_wallet","entities":{},"confidence":0.90}
 
 Audience: vendor
 Question: "What are the new enquiries in Kashmir?"
@@ -96,8 +148,8 @@ class LLMIntentResult(BaseModel):
 class LLMIntentClassifier:
     """Structured-output wrapper around LLMGateway.
 
-    Never raises on provider failure: returns None so the caller can fall
-    back to the deterministic result (NONE -> RAG path).
+    Returns None on provider/validation failure or low confidence so the
+    resolver can continue with its safe fallback behavior.
     """
 
     def __init__(self, gateway: LLMGateway | None = None) -> None:
@@ -109,6 +161,7 @@ class LLMIntentClassifier:
         audience: str,
     ) -> LLMIntentResult | None:
         user_message = f"Audience: {audience}\nQuestion: {question}"
+
         try:
             result = self.gateway.generate_structured_sync(
                 prompt=user_message,

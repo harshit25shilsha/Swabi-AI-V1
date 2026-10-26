@@ -83,6 +83,47 @@ def _fmt_my_bookings(payload: dict[str, Any]) -> str:
         )
     return "\n".join(lines)
 
+def _fmt_my_booking_detail(payload: dict[str, Any]) -> str:
+    booking = payload.get("booking")
+    if not isinstance(booking, dict) or not booking:
+        return "The booking endpoint returned no booking details."
+
+    package = booking.get("package")
+    if not isinstance(package, dict):
+        package = {}
+
+    metadata = booking.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    payment = booking.get("payment")
+    if not isinstance(payment, dict):
+        payment = {}
+
+    destination = (
+        package.get("name")
+        or metadata.get("destination")
+        or metadata.get("enquiryTitle")
+    )
+    payment_status = booking.get("paymentStatus") or payment.get("status")
+    currency = booking.get("currency") or payment.get("currency") or "INR"
+    amount = booking.get("amount")
+    if amount is None:
+        amount = payment.get("amount")
+
+    lines = [
+        "BOOKING DETAILS:",
+        f"- Booking code: {_s(booking.get('bookingCode'))}",
+        f"- Package or destination: {_s(destination)}",
+        f"- Booking type: {_s(booking.get('bookingType'))}",
+        f"- Start date: {_date(booking.get('startDate'))}",
+        f"- End date: {_date(booking.get('endDate'))}",
+        f"- Booking status: {_s(booking.get('status'))}",
+        f"- Payment status: {_s(payment_status)}",
+        f"- Amount: {_money(amount, currency)}",
+    ]
+
+    return "\n".join(lines)
 
 def _fmt_my_payments(payload: dict[str, Any]) -> str:
     payments = payload.get("payments", [])[:_MAX_ITEMS]
@@ -297,19 +338,19 @@ def _fmt_vendor_subscription(payload: Any) -> str:
 
 
 # Dispatch
-
 _FORMATTERS = {
-    LiveDataIntent.MY_BOOKINGS:         _fmt_my_bookings,
-    LiveDataIntent.MY_PAYMENTS:         _fmt_my_payments,
-    LiveDataIntent.MY_COINS:            _fmt_my_coins,
-    LiveDataIntent.MY_COIN_HISTORY:     _fmt_my_coin_history,
-    LiveDataIntent.MY_ENQUIRIES:        _fmt_my_enquiries,
-    LiveDataIntent.VENDOR_WALLET:       _fmt_vendor_wallet,
+    LiveDataIntent.MY_BOOKINGS: _fmt_my_bookings,
+    LiveDataIntent.MY_BOOKING_DETAIL: _fmt_my_booking_detail,
+    LiveDataIntent.MY_PAYMENTS: _fmt_my_payments,
+    LiveDataIntent.MY_COINS: _fmt_my_coins,
+    LiveDataIntent.MY_COIN_HISTORY: _fmt_my_coin_history,
+    LiveDataIntent.MY_ENQUIRIES: _fmt_my_enquiries,
+    LiveDataIntent.VENDOR_WALLET: _fmt_vendor_wallet,
     LiveDataIntent.VENDOR_TRANSACTIONS: _fmt_vendor_transactions,
-    LiveDataIntent.VENDOR_WITHDRAWALS:  _fmt_vendor_withdrawals,
-    LiveDataIntent.VENDOR_INQUIRIES:    _fmt_vendor_inquiries,
-    LiveDataIntent.VENDOR_BOOKINGS:     _fmt_vendor_bookings,
-    LiveDataIntent.VENDOR_BIDS:         _fmt_vendor_bids,
+    LiveDataIntent.VENDOR_WITHDRAWALS: _fmt_vendor_withdrawals,
+    LiveDataIntent.VENDOR_INQUIRIES: _fmt_vendor_inquiries,
+    LiveDataIntent.VENDOR_BOOKINGS: _fmt_vendor_bookings,
+    LiveDataIntent.VENDOR_BIDS: _fmt_vendor_bids,
     LiveDataIntent.VENDOR_SUBSCRIPTION: _fmt_vendor_subscription,
 }
 
