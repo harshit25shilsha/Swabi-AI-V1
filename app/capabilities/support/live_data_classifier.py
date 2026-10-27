@@ -28,8 +28,11 @@ class LiveDataIntent(StrEnum):
     MY_COINS = "my_coins"
     MY_COIN_HISTORY = "my_coin_history"
     MY_ENQUIRIES = "my_enquiries"
-    # Public catalogue intent; API integration is not wired yet.
+    # Public catalogue (no auth required)
     PACKAGE_SEARCH = "package_search"
+    PACKAGE_DETAIL = "package_detail"
+    ACTIVITY_SEARCH = "activity_search"
+    POPULAR_DESTINATIONS = "popular_destinations"
     # Vendor
     VENDOR_WALLET = "vendor_wallet"
     VENDOR_TRANSACTIONS = "vendor_transactions"

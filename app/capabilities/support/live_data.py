@@ -2,16 +2,10 @@
 
 Each fetcher:
   * calls one endpoint via the Swabi backend
-  * forwards the user's JWT as Bearer
+  * forwards the user's JWT as Bearer (public intents may pass None)
   * unwraps the ``{"success", "data", ...}`` envelope
   * decrypts the envelope first if the backend returns ``{"payload": "..."}``
-  * returns the payload the formatter consumes (usually a compact dict;
-    the subscription fetcher can return ``None``)
-
-Uses ``httpx.Client`` directly (sync) instead of ``SwabiClient`` because
-``SwabiClient._request`` is async while the support service is sync. The
-header construction here mirrors ``SwabiClient._headers()`` so the two
-clients stay behaviourally compatible.
+  * returns the payload the formatter consumes
 """
 from __future__ import annotations
 
@@ -31,8 +25,6 @@ log = get_logger(__name__)
 
 LIVE_FETCH_TIMEOUT = 10  # seconds
 
-# Path-parameter endpoints require a UUID; anything else triggers a
-# graceful fall-back to the list endpoint (see fetch_for_intent).
 _UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
     r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
@@ -43,33 +35,36 @@ class LiveDataFetchError(Exception):
     pass
 
 
+# Public intents — no Authorization header required.
+_PUBLIC_INTENTS: set[LiveDataIntent] = {
+    LiveDataIntent.PACKAGE_SEARCH,
+    LiveDataIntent.PACKAGE_DETAIL,
+    LiveDataIntent.ACTIVITY_SEARCH,
+    LiveDataIntent.POPULAR_DESTINATIONS,
+}
+
+
 # ---------------------------------------------------------------------------
 # Transport
 # ---------------------------------------------------------------------------
 
-def _headers(user_jwt: str) -> dict[str, str]:
-    return {
+def _headers(user_jwt: str | None) -> dict[str, str]:
+    headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
         "X-Request-ID": request_id_var.get(),
-        "Authorization": f"Bearer {user_jwt}",
     }
+    if user_jwt:
+        headers["Authorization"] = f"Bearer {user_jwt}"
+    return headers
 
 
 def _get(
     path: str,
     *,
-    user_jwt: str,
+    user_jwt: str | None,
     params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """GET through the Swabi backend, forwarding the user's JWT as Bearer.
-
-    Handles both a plain JSON envelope and an encrypted
-    ``{"payload": "<base64-ciphertext>"}`` response. If the backend returns
-    an encrypted envelope while ``SWABI_RESPONSE_PASSPHRASE`` is unset,
-    this raises a clear error instead of silently returning an empty
-    payload (which used to make every formatter print "—" with no trace).
-    """
     url = f"{settings.swabi_api_base_url.rstrip('/')}{path}"
     try:
         with httpx.Client(timeout=LIVE_FETCH_TIMEOUT) as client:
@@ -96,7 +91,6 @@ def _get(
     if not isinstance(body, dict):
         raise LiveDataFetchError(f"{path}: unexpected response type")
 
-    # Decrypt if the backend returns an encrypted envelope.
     if set(body.keys()) == {"payload"}:
         if not settings.swabi_response_passphrase:
             raise LiveDataFetchError(
@@ -163,8 +157,6 @@ def fetch_my_bookings(
 def fetch_my_booking_detail(
     user_jwt: str, booking_id: str
 ) -> dict[str, Any]:
-    """Single booking. Payload includes nested ``user``, ``escrow``,
-    ``payment`` — the formatter is responsible for compacting."""
     response = _get(f"/bookings/my/{booking_id}", user_jwt=user_jwt)
     return {"booking": _unwrap(response) or {}}
 
@@ -172,9 +164,6 @@ def fetch_my_booking_detail(
 def fetch_my_payments(
     user_jwt: str, status: str = "pending"
 ) -> dict[str, Any]:
-    # NOTE: the backend only supports pending / completed / cancelled —
-    # there is no "all". "pending" is the most actionable default; the
-    # caller can override via entities["status"].
     response = _get(
         "/payments/my-payments",
         user_jwt=user_jwt,
@@ -224,6 +213,62 @@ def fetch_enquiry_bids(
         "bids": data.get("bids", []),
         "total": data.get("total", 0),
     }
+
+
+# ---------------------------------------------------------------------------
+# Public catalogue fetchers (no auth required)
+# ---------------------------------------------------------------------------
+
+def fetch_package_list(
+    user_jwt: str | None,
+    destination: str | None = None,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {"page": 1, "limit": 10}
+    if destination:
+        params["destination"] = destination
+    response = _get("/packages", user_jwt=user_jwt, params=params)
+    data = _unwrap(response) or {}
+    return {
+        "packages": data.get("packages", []),
+        "total": data.get("total", 0),
+    }
+
+
+def fetch_package_detail(
+    user_jwt: str | None, package_id: str
+) -> dict[str, Any]:
+    response = _get(f"/packages/{package_id}", user_jwt=user_jwt)
+    return {"package": _unwrap(response) or {}}
+
+
+def fetch_activity_list(
+    user_jwt: str | None,
+    query: str | None = None,
+    category: str | None = None,
+) -> dict[str, Any]:
+    """Public activities. Endpoint changed from /activities to
+    /activities/public/list — do not revert."""
+    params: dict[str, Any] = {"page": 1, "limit": 10}
+    if query:
+        params["search"] = query
+    if category:
+        params["category"] = category
+    response = _get(
+        "/activities/public/list", user_jwt=user_jwt, params=params
+    )
+    data = _unwrap(response) or {}
+    return {
+        "activities": data.get("activities", []),
+        "total": data.get("total", 0),
+    }
+
+
+def fetch_popular_destinations(
+    user_jwt: str | None,
+) -> dict[str, Any]:
+    response = _get("/analytics/popular-destinations", user_jwt=user_jwt)
+    data = _unwrap(response) or []
+    return {"destinations": data if isinstance(data, list) else []}
 
 
 # ---------------------------------------------------------------------------
@@ -285,8 +330,6 @@ def fetch_vendor_bids(user_jwt: str) -> dict[str, Any]:
 
 
 def fetch_vendor_subscription(user_jwt: str) -> Any:
-    """Returns the raw subscription object, which may be ``None`` when the
-    vendor has no active plan."""
     response = _get("/subscriptions/my", user_jwt=user_jwt)
     return _unwrap(response)
 
@@ -303,6 +346,10 @@ _FETCHERS: dict[LiveDataIntent, Callable[..., Any]] = {
     LiveDataIntent.MY_COIN_HISTORY:      fetch_my_coin_history,
     LiveDataIntent.MY_ENQUIRIES:         fetch_my_enquiries,
     LiveDataIntent.MY_ENQUIRY_BIDS:      fetch_enquiry_bids,
+    LiveDataIntent.PACKAGE_SEARCH:       fetch_package_list,
+    LiveDataIntent.PACKAGE_DETAIL:       fetch_package_detail,
+    LiveDataIntent.ACTIVITY_SEARCH:      fetch_activity_list,
+    LiveDataIntent.POPULAR_DESTINATIONS: fetch_popular_destinations,
     LiveDataIntent.VENDOR_WALLET:        fetch_vendor_wallet,
     LiveDataIntent.VENDOR_TRANSACTIONS:  fetch_vendor_transactions,
     LiveDataIntent.VENDOR_WITHDRAWALS:   fetch_vendor_withdrawals,
@@ -320,6 +367,10 @@ _ENDPOINT_LABEL: dict[LiveDataIntent, str] = {
     LiveDataIntent.MY_COIN_HISTORY:      "GET /api/wallet/me/transactions",
     LiveDataIntent.MY_ENQUIRIES:         "GET /api/enquiries/my",
     LiveDataIntent.MY_ENQUIRY_BIDS:      "GET /api/bids/enquiry/{enquiryId}",
+    LiveDataIntent.PACKAGE_SEARCH:       "GET /api/packages",
+    LiveDataIntent.PACKAGE_DETAIL:       "GET /api/packages/{id}",
+    LiveDataIntent.ACTIVITY_SEARCH:      "GET /api/activities/public/list",
+    LiveDataIntent.POPULAR_DESTINATIONS: "GET /api/analytics/popular-destinations",
     LiveDataIntent.VENDOR_WALLET:        "GET /api/vendor/wallet/balance",
     LiveDataIntent.VENDOR_TRANSACTIONS:  "GET /api/vendor/wallet/transactions",
     LiveDataIntent.VENDOR_WITHDRAWALS:   "GET /api/vendor/wallet/withdrawals",
@@ -329,21 +380,18 @@ _ENDPOINT_LABEL: dict[LiveDataIntent, str] = {
     LiveDataIntent.VENDOR_SUBSCRIPTION:  "GET /api/subscriptions/my",
 }
 
-# Intents that take a UUID path parameter, and the entities key to read.
 _ID_REQUIRED: dict[LiveDataIntent, str] = {
     LiveDataIntent.MY_BOOKING_DETAIL: "booking_id",
     LiveDataIntent.MY_ENQUIRY_BIDS:   "enquiry_id",
+    LiveDataIntent.PACKAGE_DETAIL:    "package_id",
 }
 
-# When the UUID is missing or malformed (LLM extracted a booking code,
-# or nothing at all), fall back to the list endpoint rather than error.
-# The user gets their full list instead of "I couldn't retrieve".
 _ID_FALLBACK: dict[LiveDataIntent, LiveDataIntent] = {
     LiveDataIntent.MY_BOOKING_DETAIL: LiveDataIntent.MY_BOOKINGS,
     LiveDataIntent.MY_ENQUIRY_BIDS:   LiveDataIntent.MY_ENQUIRIES,
+    LiveDataIntent.PACKAGE_DETAIL:    LiveDataIntent.PACKAGE_SEARCH,
 }
 
-# Intents that accept ?status=..., and their default when none is extracted.
 _STATUS_DEFAULTS: dict[LiveDataIntent, str] = {
     LiveDataIntent.MY_BOOKINGS: "all",
     LiveDataIntent.MY_PAYMENTS: "pending",
@@ -356,31 +404,20 @@ def fetch_for_intent(
     user_jwt: str | None,
     entities: dict[str, Any] | None = None,
 ) -> tuple[str, Any]:
-    """Dispatch to the right fetcher. Returns ``(endpoint_label, payload)``.
-
-    Raises :class:`LiveDataFetchError` on transport error, non-200,
-    bad envelope, or decryption failure.
-
-    ``entities`` carries per-question parameters extracted by the resolver:
-      * ``booking_id`` / ``enquiry_id`` — UUIDs for detail-style intents
-      * ``status`` — filter for list endpoints (bookings, payments)
-    """
+    """Dispatch to the right fetcher. Returns ``(endpoint_label, payload)``."""
     if intent not in _FETCHERS:
         raise LiveDataFetchError(f"no fetcher for intent {intent.value}")
-    if not user_jwt:
+    if not user_jwt and intent not in _PUBLIC_INTENTS:
         raise LiveDataFetchError("user JWT required")
 
     entities = entities or {}
     handler = _FETCHERS[intent]
 
-    # ID-required intents: use the extracted UUID when valid,
-    # otherwise fall back to the list endpoint.
+    # ID-required intents (detail endpoints).
     if intent in _ID_REQUIRED:
         key = _ID_REQUIRED[intent]
         entity_id = entities.get(key) or entities.get("id")
-        entity_id_str = (
-            str(entity_id) if entity_id is not None else None
-        )
+        entity_id_str = str(entity_id) if entity_id is not None else None
         if entity_id_str and _UUID_RE.match(entity_id_str):
             payload = handler(user_jwt, entity_id_str)
             return _ENDPOINT_LABEL[intent], payload
@@ -397,7 +434,25 @@ def fetch_for_intent(
         payload = _FETCHERS[fallback](user_jwt)
         return _ENDPOINT_LABEL[fallback], payload
 
-    # Status-aware intents: honour an extracted status, else use the default.
+    # Public catalogue intents with optional filters.
+    if intent == LiveDataIntent.PACKAGE_SEARCH:
+        destination = entities.get("destination") or entities.get("query")
+        payload = handler(
+            user_jwt, destination=destination or None
+        )
+        return _ENDPOINT_LABEL[intent], payload
+
+    if intent == LiveDataIntent.ACTIVITY_SEARCH:
+        query = entities.get("query") or None
+        category = entities.get("category") or None
+        payload = handler(user_jwt, query=query, category=category)
+        return _ENDPOINT_LABEL[intent], payload
+
+    if intent == LiveDataIntent.POPULAR_DESTINATIONS:
+        payload = handler(user_jwt)
+        return _ENDPOINT_LABEL[intent], payload
+
+    # Status-aware intents.
     if intent in _STATUS_DEFAULTS:
         status = entities.get("status") or _STATUS_DEFAULTS[intent]
         payload = handler(user_jwt, status=status)

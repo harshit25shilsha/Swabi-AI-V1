@@ -36,6 +36,11 @@ Do NOT answer the question. Do NOT explain. Return JSON only.
 Never invent IDs, destinations, dates, filters, or other entity values.
 Never create an intent that is not listed below.
 
+When a LIVE DATA block is present and contains the requested information,
+answer from it directly. Never return INSUFFICIENT_CONTEXT in that case.
+Prefer plain text over pipe-separated fields; do not rewrite delimiters
+into other punctuation.
+
 CUSTOMER INTENTS (only meaningful when audience is "customer"):
 - my_bookings: list or filter the user's own bookings or trips.
   If the user asks for pending, upcoming, or cancelled bookings, extract
@@ -52,13 +57,15 @@ CUSTOMER INTENTS (only meaningful when audience is "customer"):
 - my_coin_history: the user's Swabi coin transaction history.
 - my_enquiries: the user's posted enquiries or trip requests.
 
-PUBLIC CATALOGUE INTENT:
-- package_search: search the current public package catalogue.
-  Extract "query" as a short search phrase, such as a destination or package
-  name, when the user specifies one.
-  For a general browse request, return "query" as an empty string.
-  Do not claim that packages are new, available, or bookable unless those
-  properties are returned by the backend.
+PUBLIC CATALOGUE INTENTS (no authentication required, any audience):
+- package_search: browse the public package catalogue.
+  Extract "destination" when the user names a place (e.g. "Goa", "Kashmir").
+- package_detail: details of one specific package.
+  Extract its UUID as "package_id" only when the UUID is explicitly in the question.
+- activity_search: browse public activities.
+  Extract "query" for free-text (destination, name) and/or "category"
+  (one of adventure, heritage, sightseeing, cultural, wildlife).
+- popular_destinations: trending/popular travel destinations.
 
 VENDOR INTENTS (only meaningful when audience is "vendor"):
 - vendor_wallet: the user's vendor wallet balance.
@@ -107,11 +114,15 @@ Output: {"intent":"my_bookings","entities":{"status":"pending"},"confidence":0.9
 
 Audience: customer
 Question: "What is the status of booking 46f46148-e88d-42b6-bbd4-d87f14009f65?"
-Output: {"intent":"my_booking_detail","entities":{"booking_id":"46f46148-e88d-42b6-bbd4-d87f14009f65"},"confidence":0.97}
+Output: {"intent":"my_booking_detail",
+         "entities":{"booking_id":"46f46148-e88d-42b6-bbd4-d87f14009f65"},
+         "confidence":0.97}
 
 Audience: customer
 Question: "Who bid on my enquiry 46f46148-e88d-42b6-bbd4-d87f14009f65?"
-Output: {"intent":"my_enquiry_bids","entities":{"enquiry_id":"46f46148-e88d-42b6-bbd4-d87f14009f65"},"confidence":0.95}
+Output: {"intent":"my_enquiry_bids",
+         "entities":{"enquiry_id":"46f46148-e88d-42b6-bbd4-d87f14009f65"},
+         "confidence":0.95}
 
 Audience: customer
 Question: "Are there new packages available?"
@@ -136,6 +147,23 @@ Output: {"intent":"vendor_wallet","entities":{},"confidence":0.90}
 Audience: vendor
 Question: "What are the new enquiries in Kashmir?"
 Output: {"intent":"vendor_inquiries","entities":{"destination":"Kashmir"},"confidence":0.88}
+
+Audience: customer
+Question: "Tell me about the Rishikesh Tours package 17da203f-942d-4650-b9bb-b84a0d928aca"
+Output: {"intent":"package_detail",
+         "entities":{"package_id":"17da203f-942d-4650-b9bb-b84a0d928aca"},
+         "confidence":0.96}
+
+Audience: customer
+Question: "Show me adventure activities in India"
+Output: {"intent":"activity_search",
+         "entities":{"query":"India","category":"adventure"},
+         "confidence":0.92}
+
+Audience: customer
+Question: "What are the trending destinations right now?"
+Output: {"intent":"popular_destinations","entities":{},"confidence":0.95}
+
 """
 
 

@@ -356,6 +356,98 @@ def _fmt_vendor_subscription(payload: Any) -> str:
     return f"Your subscription: {_s(payload)}"
 
 
+def _fmt_package_search(payload: dict[str, Any]) -> str:
+    packages = payload.get("packages", [])[:_MAX_ITEMS]
+    total = payload.get("total", len(packages))
+    if not packages:
+        return "No packages match that search right now."
+    lines = [f"PUBLIC PACKAGES (showing {len(packages)} of {total}):"]
+    for p in packages:
+        agent = p.get("agent") or {}
+        lines.append(
+            f"- {_s(p.get('packageCode'))} | \"{_s(p.get('title'))}\" | "
+            f"{_s(p.get('destination'))} | "
+            f"{_s(p.get('duration'))} | "
+            f"{_money(p.get('price'), p.get('currency') or 'INR')} | "
+            f"by {_s(agent.get('companyName'))}"
+        )
+    return "\n".join(lines)
+
+
+def _fmt_package_detail(payload: dict[str, Any]) -> str:
+    p = payload.get("package") or {}
+    if not p:
+        return "The package endpoint returned no details."
+    agent = p.get("agent") or {}
+    inclusions = p.get("inclusions") or []
+    activities = p.get("activities") or []
+    lines = [
+        "PACKAGE DETAILS:",
+        f"- ID: {_s(p.get('id'))}",
+        f"- Code: {_s(p.get('packageCode'))}",
+        f"- Title: {_s(p.get('title'))}",
+        f"- Destination: {_s(p.get('destination'))}",
+        f"- Duration: {_s(p.get('duration'))} "
+        f"({_s(p.get('numberOfDays'), 5)} days)",
+        f"- Price: {_money(p.get('price'), p.get('currency') or 'INR')} "
+        f"(base {_money(p.get('basePrice'), p.get('currency') or 'INR')}, "
+        f"savings {_s(p.get('savingsPercent'), 5)}%)",
+        f"- Provider: {_s(agent.get('companyName'))} "
+        f"(verified={bool(agent.get('isVerified'))})",
+        f"- Escrow safe: {bool(p.get('isEscrowSafe'))}",
+    ]
+    if p.get("description"):
+        lines.append(f"- Description: {_s(p.get('description'))}")
+    if inclusions:
+        lines.append(f"- Inclusions: {_s(', '.join(map(str, inclusions)))}")
+    if activities:
+        names = [
+            _s(a.get("name")) for a in activities if isinstance(a, dict)
+        ]
+        names = [n for n in names if n and n != "-"]     # drop blank names
+        if names:
+            lines.append(f"- Activities: {_s(', '.join(names))}")
+    return "\n".join(lines)
+
+
+def _fmt_activity_search(payload: dict[str, Any]) -> str:
+    activities = payload.get("activities", [])[:_MAX_ITEMS]
+    total = payload.get("total", len(activities))
+    if not activities:
+        return "No activities match that search right now."
+    lines = [f"PUBLIC ACTIVITIES (showing {len(activities)} of {total}):"]
+    for a in activities:
+        location = ", ".join(
+            x for x in [a.get("state"), a.get("country")] if x
+        ) or "—"
+        name = a.get("name") or "(unnamed activity)"
+        lines.append(
+            f"- \"{_s(a.get('name'))}\" | {_s(a.get('category'))} | "
+            f"{_s(location)} | "
+            f"{_money(a.get('price'), a.get('currency') or 'INR')} | "
+            f"{_s(a.get('durationHours'), 5)}h"
+        )
+    return "\n".join(lines)
+
+
+def _fmt_popular_destinations(payload: dict[str, Any]) -> str:
+    dests = payload.get("destinations", [])[:_MAX_ITEMS]
+    if not dests:
+        return "No trending destination data is available right now."
+    lines = ["POPULAR DESTINATIONS (by enquiries):"]
+    for d in dests:
+        avg = d.get("avg_budget")
+        avg_str = (
+            _money(avg, "INR") if avg not in (None, "") else "—"
+        )
+        lines.append(
+            f"- {_s(d.get('destination'))} | "
+            f"{_s(d.get('total_enquiries'), 10)} enquiries | "
+            f"avg budget {avg_str} | "
+            f"{_s(d.get('unique_users'), 10)} unique users"
+        )
+    return "\n".join(lines)
+
 
 # Dispatch
 _FORMATTERS = {
@@ -373,6 +465,10 @@ _FORMATTERS = {
     LiveDataIntent.VENDOR_BIDS: _fmt_vendor_bids,
     LiveDataIntent.VENDOR_SUBSCRIPTION: _fmt_vendor_subscription,
     LiveDataIntent.MY_ENQUIRY_BIDS: _fmt_my_enquiry_bids,
+    LiveDataIntent.PACKAGE_SEARCH: _fmt_package_search,
+    LiveDataIntent.PACKAGE_DETAIL: _fmt_package_detail,
+    LiveDataIntent.ACTIVITY_SEARCH: _fmt_activity_search,
+    LiveDataIntent.POPULAR_DESTINATIONS: _fmt_popular_destinations,
 }
 
 

@@ -88,14 +88,18 @@ _VERSION_UNAVAILABLE_MESSAGE = (
 
 _SIGN_IN_MESSAGE = "Please sign in to view your live information."
 
-_NOT_YET_IMPLEMENTED = {
+_PUBLIC_INTENTS: set[LiveDataIntent] = {
     LiveDataIntent.PACKAGE_SEARCH,
+    LiveDataIntent.PACKAGE_DETAIL,
+    LiveDataIntent.ACTIVITY_SEARCH,
+    LiveDataIntent.POPULAR_DESTINATIONS,
 }
 
+# Kept for future use; empty now that all four public endpoints are wired.
+_NOT_YET_IMPLEMENTED: set[LiveDataIntent] = set()
+
 _NOT_YET_IMPLEMENTED_MESSAGE = (
-    "I can't browse the live package catalogue from here yet. "
-    "Please open the Packages page in the app to see current options, "
-    "or ask me about your own bookings, payments, or wallet."
+    "That information isn't available right now. Please try again shortly."
 )
 
 
@@ -308,8 +312,8 @@ def ask(
         if resolved.intent in VENDOR_ONLY and audience != "vendor":
             return _scope_mismatch(requested=resolved.intent, audience=audience)
 
-        # JWT gate.
-        if not user_jwt:
+        # JWT gate - public intents need no auth.
+        if resolved.intent not in _PUBLIC_INTENTS and not user_jwt:
             return _fallback(
                 answer=_SIGN_IN_MESSAGE,
                 answer_type=AnswerType.NEEDS_LIVE_DATA,
