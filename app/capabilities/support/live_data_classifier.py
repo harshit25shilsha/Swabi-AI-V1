@@ -28,6 +28,8 @@ class LiveDataIntent(StrEnum):
     MY_COINS = "my_coins"
     MY_COIN_HISTORY = "my_coin_history"
     MY_ENQUIRIES = "my_enquiries"
+    # Public catalogue intent; API integration is not wired yet.
+    PACKAGE_SEARCH = "package_search"
     # Vendor
     VENDOR_WALLET = "vendor_wallet"
     VENDOR_TRANSACTIONS = "vendor_transactions"
@@ -178,6 +180,11 @@ _MY_BOOKINGS = [
     re.compile(r"\bshow\s+(me\s+)?my\s+(bookings?|trips?)\b", re.I),
     re.compile(
         r"\bmy\s+(upcoming|pending|cancelled|past)\s+(bookings?|trips?)\b",
+        re.I,
+    ),
+    re.compile(
+        r"\bshow\s+(me\s+)?my\s+(upcoming|pending|cancelled|past)\s+"
+        r"packages?\b",
         re.I,
     ),
     re.compile(

@@ -11,6 +11,7 @@ from app.capabilities.support.schemas import (
     SupportAskRequest,
 )
 from app.capabilities.support.service import ask
+from app.capabilities.support.live_data_classifier import LiveDataIntent
 from app.rag.schemas import Audience, RetrievedChunk
 
 
@@ -79,6 +80,41 @@ def test_vendor_asking_customer_scope(retriever, patch_version_ok):
         user_jwt="jwt-x",
     )
     assert r.answer_type == AnswerType.NEEDS_LIVE_DATA
+
+
+def test_unimplemented_package_search_returns_guidance_without_fetch(
+    retriever,
+):
+    resolved = MagicMock(
+        intent=LiveDataIntent.PACKAGE_SEARCH,
+        source="llm",
+    )
+    resolver = MagicMock()
+    resolver.resolve.return_value = resolved
+
+    with (
+        patch(
+            "app.capabilities.support.service._get_resolver",
+            return_value=resolver,
+        ),
+        patch(
+            "app.capabilities.support.service.fetch_for_intent"
+        ) as fetch,
+    ):
+        result = ask(
+            SupportAskRequest(
+                question="Show me packages in Goa",
+                audience=Audience.CUSTOMER,
+            ),
+            retriever=retriever,
+            user_jwt="test-user-jwt",
+        )
+
+    assert result.answer_type == AnswerType.NEEDS_LIVE_DATA
+    assert "can't browse the live package catalogue" in result.answer.lower()
+    assert result.live_data_used is False
+    fetch.assert_not_called()
+    retriever.search.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

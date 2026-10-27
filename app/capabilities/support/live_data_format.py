@@ -188,6 +188,26 @@ def _fmt_my_enquiries(payload: dict[str, Any]) -> str:
         )
     return "\n".join(lines)
 
+def _fmt_my_enquiry_bids(payload: dict[str, Any]) -> str:
+    bids = payload.get("bids", [])[:_MAX_ITEMS]
+    total = payload.get("total", len(bids))
+    if not bids:
+        return f"BIDS ON YOUR ENQUIRY: none yet (total {total})."
+
+    lines = [
+        f"BIDS ON YOUR ENQUIRY (most recent {len(bids)} of {total}):"
+    ]
+    for b in bids:
+        agent = b.get("agent") or {}
+        lines.append(
+            f"- {_money(b.get('amount'), b.get('currency') or 'INR')} "
+            f"from {_s(agent.get('companyName'))} | "
+            f"status={_s(b.get('status'))} | "
+            f"negotiation={_s(b.get('negotiationStatus'))} | "
+            f"created={_date(b.get('createdAt'))}"
+        )
+    return "\n".join(lines)
+
 
 def _fmt_vendor_wallet(payload: dict[str, Any]) -> str:
     return (
@@ -352,6 +372,7 @@ _FORMATTERS = {
     LiveDataIntent.VENDOR_BOOKINGS: _fmt_vendor_bookings,
     LiveDataIntent.VENDOR_BIDS: _fmt_vendor_bids,
     LiveDataIntent.VENDOR_SUBSCRIPTION: _fmt_vendor_subscription,
+    LiveDataIntent.MY_ENQUIRY_BIDS: _fmt_my_enquiry_bids,
 }
 
 

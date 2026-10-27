@@ -88,6 +88,16 @@ _VERSION_UNAVAILABLE_MESSAGE = (
 
 _SIGN_IN_MESSAGE = "Please sign in to view your live information."
 
+_NOT_YET_IMPLEMENTED = {
+    LiveDataIntent.PACKAGE_SEARCH,
+}
+
+_NOT_YET_IMPLEMENTED_MESSAGE = (
+    "I can't browse the live package catalogue from here yet. "
+    "Please open the Packages page in the app to see current options, "
+    "or ask me about your own bookings, payments, or wallet."
+)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -246,6 +256,22 @@ def ask(
     # 1. Resolve intent — deterministic first, LLM fallback.
     # ------------------------------------------------------------------
     resolved = _get_resolver().resolve(request.question, audience)
+
+    # Recognized live-data intents whose backend integration is not wired yet.
+    if resolved.intent in _NOT_YET_IMPLEMENTED:
+        log.info(
+            "support_intent_not_implemented",
+            extra={
+                "q_hash": q_hash,
+                "intent": resolved.intent.value,
+                "source": resolved.source,
+            },
+        )
+        return _fallback(
+            answer=_NOT_YET_IMPLEMENTED_MESSAGE,
+            answer_type=AnswerType.NEEDS_LIVE_DATA,
+            knowledge_version="",
+        )
 
     # ------------------------------------------------------------------
     # 2. Scope-mismatch from the resolver (deterministic scope block).

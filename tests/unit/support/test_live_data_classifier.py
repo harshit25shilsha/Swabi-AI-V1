@@ -43,6 +43,13 @@ def test_customer_intents(q, expected):
     assert result.intent == expected
 
 
+def test_pending_packages_resolve_to_pending_customer_bookings():
+    result = classify("Show me my pending packages", "customer")
+
+    assert result.intent == LiveDataIntent.MY_BOOKINGS
+    assert result.entities == {"status": "pending"}
+
+
 # ---------------------------------------------------------------------------
 # Vendor
 # ---------------------------------------------------------------------------
