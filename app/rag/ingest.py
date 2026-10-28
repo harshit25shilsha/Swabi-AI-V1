@@ -447,6 +447,13 @@ def ingest(
                 f"unmapped heading path: {' > '.join(path)}"
             )
             continue
+        lifecycle = spec.get("policy_lifecycle") or {}
+        if lifecycle.get("status") == "withdrawn":
+            excluded.append(
+                f"{' > '.join(path)}: withdrawn policy "
+                f"{lifecycle.get('policy_id', leaf_id)}"
+            )
+            continue
 
         buckets[leaf_id].append((path, document.page_content))
         bucket_path.setdefault(leaf_id, path)
@@ -512,6 +519,26 @@ def ingest(
                     source=cfg["default_source"],
                     source_version=cfg["source_version"],
                     last_updated=cfg["last_updated"],
+                    policy_id=(spec.get("policy_lifecycle") or {}).get(
+                        "policy_id"
+                    ),
+                    policy_status=(
+                        (spec.get("policy_lifecycle") or {}).get("status")
+                        or (
+                            "not_applicable"
+                            if spec["category"] not in cfg["policy_categories"]
+                            else "unclassified"
+                        )
+                    ),
+                    effective_from=(spec.get("policy_lifecycle") or {}).get(
+                        "effective_from"
+                    ),
+                    expires_on=(spec.get("policy_lifecycle") or {}).get(
+                        "expires_on"
+                    ),
+                    supersedes=(spec.get("policy_lifecycle") or {}).get(
+                        "supersedes", []
+                    ),
                     destination=spec.get("destination"),
                     activity=spec.get("activity"),
                     review_flags=flags,
@@ -526,7 +553,10 @@ def ingest(
     }
     missing_leaves = [
         sid for sid in leaves
-        if sid not in produced_ids and sid not in excluded_ids
+        if sid not in produced_ids
+        and sid not in excluded_ids
+        and (leaves[sid].get("policy_lifecycle") or {}).get("status")
+        != "withdrawn"
     ]
     if missing_leaves:
         raise IngestError(

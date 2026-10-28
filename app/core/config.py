@@ -69,7 +69,7 @@ class Settings(BaseSettings):
 
     # Feature flags
 
-    enable_rag: bool = False
+    enable_rag: bool = True
     enable_tools: bool = False
     enable_evaluation: bool = False
 
@@ -82,13 +82,18 @@ class Settings(BaseSettings):
     qdrant_collection: str = "swabi_chunks"
     qdrant_timeout: int = 30
 
-    rag_embedding_model: str = "intfloat/multilingual-e5-small"
+    rag_embedding_model: str = "BAAI/bge-small-en-v1.5"
     rag_embedding_dim: int = 384
     rag_embedding_batch_size: int = 32
 
     # Rag Retrieval + answer
     rag_top_k : int = 5
     rag_min_score: float = 0.45
+
+    # Swabi backend response encryption (CryptoJS AES)
+    # Leave empty if the backend returns plain JSON.
+    swabi_response_passphrase: str = ""
+    swabi_response_kdf: str = "md5"  # "md5" (CryptoJS default) or "sha256"
 
     @property
     def GROQ_API_KEY(self) -> str:

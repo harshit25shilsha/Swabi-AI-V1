@@ -1,17 +1,9 @@
-"""Async HTTP client for the Swabi NestJS backend.
-
-The AI service never talks to the Swabi database directly — all live data
-must flow through this client.
-
-Authentication precedence (highest first):
-    1. Caller-forwarded user JWT (from `Authorization: Bearer ...`)
-    2. Service API key (`SWABI_API_KEY`) for internal / background calls
-    3. No Authorization header (unauthenticated, only if backend allows)
-"""
+"""Async HTTP client for the Swabi NestJS backend."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 
 import httpx
 
@@ -19,6 +11,7 @@ from app.core.auth_context import get_user_jwt
 from app.core.config import settings
 from app.core.exceptions import SwabiAPIError, SwabiAuthenticationError
 from app.core.logging import get_logger, request_id_var
+from app.swabi.crypto import SwabiDecryptionError, decrypt_payload
 
 log = get_logger(__name__)
 
@@ -44,15 +37,11 @@ class SwabiClient:
             "Content-Type": "application/json",
             "X-Request-ID": request_id_var.get(),
         }
-
         user_jwt = get_user_jwt()
         if user_jwt:
-            # Caller-forwarded user identity takes precedence.
             headers["Authorization"] = f"Bearer {user_jwt}"
         elif self.api_key:
-            # Fallback for internal / service-context calls.
             headers["Authorization"] = f"Bearer {self.api_key}"
-
         return headers
 
     async def _request(self, method: str, path: str, **kwargs: object) -> dict:
@@ -90,9 +79,46 @@ class SwabiClient:
                     )
 
                 try:
-                    return resp.json()
+                    data = resp.json()
                 except ValueError as exc:
                     raise SwabiAPIError(f"Swabi returned non-JSON: {exc}") from exc
+
+                # Decrypt if the backend returns an encrypted envelope.
+                if (
+                    isinstance(data, dict)
+                    and set(data.keys()) == {"payload"}
+                    and settings.swabi_response_passphrase
+                ):
+                    log.info(
+                        "swabi_decrypt",
+                        extra={
+                            "path": path,
+                            "ciphertext_len": len(data["payload"]),
+                        },
+                    )
+                    try:
+                        plaintext = decrypt_payload(
+                            data["payload"],
+                            settings.swabi_response_passphrase,
+                            kdf=settings.swabi_response_kdf,
+                        )
+                    except SwabiDecryptionError as exc:
+                        raise SwabiAPIError(
+                            f"Swabi decryption failed on {path}: {exc}"
+                        ) from exc
+                    try:
+                        data = json.loads(plaintext)
+                    except json.JSONDecodeError as exc:
+                        raise SwabiAPIError(
+                            f"decrypted payload is not JSON on {path}: {exc}"
+                        ) from exc
+
+                if not isinstance(data, dict):
+                    raise SwabiAPIError(
+                        f"Swabi response is not a dict on {path}: "
+                        f"{type(data).__name__}"
+                    )
+                return data
 
         raise SwabiAPIError(f"Swabi request failed after retries: {url}")
 

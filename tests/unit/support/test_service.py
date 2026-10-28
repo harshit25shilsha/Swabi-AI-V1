@@ -152,12 +152,12 @@ def test_answered_but_bad_citation_downgrades(
     assert r.answer_type == AnswerType.INSUFFICIENT_CONTEXT
 
 
-def test_forbidden_path_downgrades(
+def test_forbidden_path_is_redacted_without_discarding_grounded_answer(
     retriever, patch_version_ok, gateway
 ):
     gateway.generate_structured_sync.return_value = LLMAnswerOutput(
         answer_type=AnswerType.ANSWERED,
-        answer="Visit /admin/escrows to check.",
+        answer="The escrow is released by an administrator. Visit /admin/escrows to check.",
         citation_chunk_ids=["id1"],
         confidence=0.9,
     )
@@ -170,7 +170,11 @@ def test_forbidden_path_downgrades(
                               audience=Audience.CUSTOMER),
             retriever=retriever,
         )
-    assert r.answer_type == AnswerType.INSUFFICIENT_CONTEXT
+    assert r.answer_type == AnswerType.ANSWERED
+    assert "released by an administrator" in r.answer
+    assert "/admin" not in r.answer
+    assert "redacted" in r.answer
+    assert r.citations[0].chunk_id == "id1"
 
 
 def test_financial_promise_downgrades(

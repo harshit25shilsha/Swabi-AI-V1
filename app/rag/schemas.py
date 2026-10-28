@@ -66,6 +66,11 @@ class ChunkMetadata(BaseModel):
     source: str
     source_version: str
     last_updated: str
+    policy_id: str | None = None
+    policy_status: str = "not_applicable"
+    effective_from: str | None = None
+    expires_on: str | None = None
+    supersedes: list[str] = Field(default_factory=list)
     destination: str | None = None
     activity: str | None = None
     review_flags: list[ReviewFlag] = Field(default_factory=list)
