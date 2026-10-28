@@ -240,3 +240,46 @@ def test_package_detail_formatter_produces_expected_shape():
     assert "Karan Tours" in out
     assert "INR 2,000.00" in out
     assert "Laxman Jhula" in out
+
+
+def test_activity_formatter_omits_records_without_a_name():
+    from app.capabilities.support.live_data_format import format_for_intent
+
+    out = format_for_intent(
+        LiveDataIntent.ACTIVITY_SEARCH,
+        {
+            "activities": [
+                {
+                    "name": "",
+                    "category": "adventure",
+                    "state": "Karnataka",
+                    "country": "India",
+                    "price": "1500.00",
+                },
+                {
+                    "name": "Bungee Jumping",
+                    "category": "adventure",
+                    "state": "Uttrakhand",
+                    "country": "India",
+                    "price": "1500.00",
+                },
+            ],
+            "total": 2,
+        },
+    )
+
+    assert "Bungee Jumping" in out
+    assert "Karnataka" not in out
+    assert "India" in out
+
+
+def test_activity_formatter_does_not_invent_missing_names():
+    from app.capabilities.support.live_data_format import format_for_intent
+
+    out = format_for_intent(
+        LiveDataIntent.ACTIVITY_SEARCH,
+        {"activities": [{"name": "", "category": "adventure"}], "total": 1},
+    )
+
+    assert "without usable names" in out
+    assert "(No title)" not in out

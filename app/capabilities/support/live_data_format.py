@@ -189,14 +189,35 @@ def _fmt_my_enquiries(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 def _fmt_my_enquiry_bids(payload: dict[str, Any]) -> str:
+    enquiry = payload.get("enquiry")
+    if payload.get("enquiry") is None and "enquiry" in payload:
+        return "You don't have any enquiries to check for bids."
+
     bids = payload.get("bids", [])[:_MAX_ITEMS]
     total = payload.get("total", len(bids))
     if not bids:
-        return f"BIDS ON YOUR ENQUIRY: none yet (total {total})."
+        if isinstance(enquiry, dict):
+            title = (
+                enquiry.get("title")
+                or enquiry.get("destination")
+                or "your most recent enquiry"
+            )
+            return f"No bids have been received on {_s(title)} yet."
+        return "No bids have been received on this enquiry yet."
 
-    lines = [
-        f"BIDS ON YOUR ENQUIRY (most recent {len(bids)} of {total}):"
-    ]
+    if isinstance(enquiry, dict):
+        title = (
+            enquiry.get("title")
+            or enquiry.get("destination")
+            or "your most recent enquiry"
+        )
+        header = (
+            f"BIDS ON YOUR MOST RECENT ENQUIRY ({_s(title)}; "
+            f"showing {len(bids)} of {total}):"
+        )
+    else:
+        header = f"BIDS ON YOUR ENQUIRY (most recent {len(bids)} of {total}):"
+    lines = [header]
     for b in bids:
         agent = b.get("agent") or {}
         lines.append(
@@ -411,17 +432,30 @@ def _fmt_package_detail(payload: dict[str, Any]) -> str:
 
 
 def _fmt_activity_search(payload: dict[str, Any]) -> str:
-    activities = payload.get("activities", [])[:_MAX_ITEMS]
-    total = payload.get("total", len(activities))
-    if not activities:
+    raw_activities = payload.get("activities", [])
+    activities = [
+        activity for activity in raw_activities
+        if isinstance(activity, dict)
+        and str(activity.get("name") or activity.get("title") or "").strip()
+    ][: _MAX_ITEMS]
+    total = payload.get("total", len(raw_activities))
+    if not activities and not raw_activities:
         return "No activities match that search right now."
-    lines = [f"PUBLIC ACTIVITIES (showing {len(activities)} of {total}):"]
+    if not activities:
+        return (
+            "The activities service returned entries without usable names. "
+            "Please try again later."
+        )
+    lines = [
+        f"PUBLIC ACTIVITIES (showing {len(activities)} usable of {total}):"
+    ]
     for a in activities:
         location = ", ".join(
             x for x in [a.get("state"), a.get("country")] if x
         ) or "—"
         lines.append(
-            f"- \"{_s(a.get('name'))}\" | {_s(a.get('category'))} | "
+            f"- \"{_s(a.get('name') or a.get('title'))}\" | "
+            f"{_s(a.get('category'))} | "
             f"{_s(location)} | "
             f"{_money(a.get('price'), a.get('currency') or 'INR')} | "
             f"{_s(a.get('durationHours'), 5)}h"

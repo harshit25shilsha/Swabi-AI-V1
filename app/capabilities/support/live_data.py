@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -24,6 +26,8 @@ from app.swabi.crypto import SwabiDecryptionError, decrypt_payload
 log = get_logger(__name__)
 
 LIVE_FETCH_TIMEOUT = 10  # seconds
+LIVE_FETCH_MAX_ATTEMPTS = 2
+LIVE_FETCH_RETRY_DELAY_SECONDS = 0.25
 
 _UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
@@ -66,15 +70,27 @@ def _get(
     params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     url = f"{settings.swabi_api_base_url.rstrip('/')}{path}"
-    try:
-        with httpx.Client(timeout=LIVE_FETCH_TIMEOUT) as client:
-            resp = client.get(
-                url, headers=_headers(user_jwt), params=params or {}
+    for attempt in range(1, LIVE_FETCH_MAX_ATTEMPTS + 1):
+        try:
+            with httpx.Client(timeout=LIVE_FETCH_TIMEOUT) as client:
+                resp = client.get(
+                    url, headers=_headers(user_jwt), params=params or {}
+                )
+            break
+        except httpx.TimeoutException as exc:
+            if attempt == LIVE_FETCH_MAX_ATTEMPTS:
+                raise LiveDataFetchError(f"{path}: timeout") from exc
+            log.warning(
+                "live_data_timeout_retry",
+                extra={
+                    "path": path,
+                    "attempt": attempt,
+                    "max_attempts": LIVE_FETCH_MAX_ATTEMPTS,
+                },
             )
-    except httpx.TimeoutException as exc:
-        raise LiveDataFetchError(f"{path}: timeout") from exc
-    except httpx.HTTPError as exc:
-        raise LiveDataFetchError(f"{path}: {exc}") from exc
+            time.sleep(LIVE_FETCH_RETRY_DELAY_SECONDS)
+        except httpx.HTTPError as exc:
+            raise LiveDataFetchError(f"{path}: {exc}") from exc
 
     if resp.status_code == 401:
         raise LiveDataFetchError(f"{path}: 401 unauthorized")
@@ -162,14 +178,17 @@ def fetch_my_booking_detail(
 
 
 def fetch_my_payments(
-    user_jwt: str, status: str = "pending"
+    user_jwt: str, status: str | None = None
 ) -> dict[str, Any]:
+    params = {"status": status} if status else {}
     response = _get(
         "/payments/my-payments",
         user_jwt=user_jwt,
-        params={"status": status},
+        params=params,
     )
     data = _unwrap(response) or []
+    if isinstance(data, dict):
+        data = data.get("payments", [])
     return {
         "payments": data if isinstance(data, list) else [],
         "total": len(data or []),
@@ -388,14 +407,33 @@ _ID_REQUIRED: dict[LiveDataIntent, str] = {
 
 _ID_FALLBACK: dict[LiveDataIntent, LiveDataIntent] = {
     LiveDataIntent.MY_BOOKING_DETAIL: LiveDataIntent.MY_BOOKINGS,
-    LiveDataIntent.MY_ENQUIRY_BIDS:   LiveDataIntent.MY_ENQUIRIES,
     LiveDataIntent.PACKAGE_DETAIL:    LiveDataIntent.PACKAGE_SEARCH,
 }
 
 _STATUS_DEFAULTS: dict[LiveDataIntent, str] = {
     LiveDataIntent.MY_BOOKINGS: "all",
-    LiveDataIntent.MY_PAYMENTS: "pending",
 }
+
+_STATUS_ALIASES = {
+    "cancel": "cancelled",
+    "canceled": "cancelled",
+    "cancelled": "cancelled",
+    "complete": "completed",
+    "completed": "completed",
+}
+
+
+def _created_at_timestamp(enquiry: dict[str, Any]) -> float:
+    created_at = enquiry.get("createdAt")
+    if not isinstance(created_at, str) or not created_at.strip():
+        return float("-inf")
+    try:
+        parsed = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    except ValueError:
+        return float("-inf")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.timestamp()
 
 
 def fetch_for_intent(
@@ -412,6 +450,45 @@ def fetch_for_intent(
 
     entities = entities or {}
     handler = _FETCHERS[intent]
+
+    if intent == LiveDataIntent.MY_ENQUIRY_BIDS:
+        enquiry_id = entities.get("enquiry_id") or entities.get("id")
+        enquiry_id_str = str(enquiry_id) if enquiry_id is not None else None
+        if enquiry_id_str and _UUID_RE.match(enquiry_id_str):
+            payload = handler(user_jwt, enquiry_id_str)
+            return _ENDPOINT_LABEL[intent], payload
+
+        enquiries_payload = fetch_my_enquiries(user_jwt)
+        enquiries = [
+            item for item in enquiries_payload["enquiries"]
+            if isinstance(item, dict) and not item.get("isDeleted", False)
+        ]
+        if not enquiries:
+            return (
+                "GET /api/enquiries/my",
+                {"enquiry": None, "bids": [], "total": 0},
+            )
+
+        latest = max(enquiries, key=_created_at_timestamp)
+        latest_id = latest.get("id")
+        if not isinstance(latest_id, str) or not _UUID_RE.match(latest_id):
+            raise LiveDataFetchError(
+                "most recent enquiry does not contain a valid ID"
+            )
+
+        bids = handler(user_jwt, latest_id)
+        return (
+            "GET /api/enquiries/my + GET /api/bids/enquiry/{enquiryId}",
+            {
+                "enquiry": {
+                    "id": latest_id,
+                    "title": latest.get("title"),
+                    "destination": latest.get("destination"),
+                    "createdAt": latest.get("createdAt"),
+                },
+                **bids,
+            },
+        )
 
     # ID-required intents (detail endpoints).
     if intent in _ID_REQUIRED:
@@ -453,8 +530,18 @@ def fetch_for_intent(
         return _ENDPOINT_LABEL[intent], payload
 
     # Status-aware intents.
+    if intent == LiveDataIntent.MY_PAYMENTS:
+        status = entities.get("status")
+        if status:
+            status = _STATUS_ALIASES.get(str(status).strip().lower(), status)
+            payload = handler(user_jwt, status=status)
+        else:
+            payload = handler(user_jwt)
+        return _ENDPOINT_LABEL[intent], payload
+
     if intent in _STATUS_DEFAULTS:
         status = entities.get("status") or _STATUS_DEFAULTS[intent]
+        status = _STATUS_ALIASES.get(str(status).strip().lower(), status)
         payload = handler(user_jwt, status=status)
         return _ENDPOINT_LABEL[intent], payload
 

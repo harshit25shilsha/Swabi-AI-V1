@@ -76,6 +76,12 @@ RULES
 - If only RETRIEVED CONTEXT is present, cite at least one chunk id.
 - If neither source supports an answer, return insufficient_context.
 - Never invent numbers, dates, or facts not present in either source.
+- Do not broaden a LIVE DATA result beyond its scope. If it covers one
+  enquiry, one status, or a limited list, describe only that enquiry,
+  status, or returned list; never make claims about all enquiries,
+  payments, bookings, or catalogue entries.
+- If a LIVE DATA record has no usable name or a field is missing, omit
+  that field rather than inventing a title, location, or other value.
 
 CITATIONS
 - List chunk ids from RETRIEVED CONTEXT under `citation_chunk_ids`.

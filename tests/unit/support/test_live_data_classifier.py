@@ -28,6 +28,10 @@ from app.capabilities.support.live_data_classifier import (
     ("wallet transactions", LiveDataIntent.MY_COIN_HISTORY),
     ("My enquiries", LiveDataIntent.MY_ENQUIRIES),
     ("List my posted travel requests", LiveDataIntent.MY_ENQUIRIES),
+    (
+        "Show me the bids on my any one single enquiry only",
+        LiveDataIntent.MY_ENQUIRY_BIDS,
+    ),
     # New — "last booked packages" variants
     ("Show me my last booked packages", LiveDataIntent.MY_BOOKINGS),
     ("my last booking", LiveDataIntent.MY_BOOKINGS),
@@ -48,6 +52,43 @@ def test_pending_packages_resolve_to_pending_customer_bookings():
 
     assert result.intent == LiveDataIntent.MY_BOOKINGS
     assert result.entities == {"status": "pending"}
+
+
+@pytest.mark.parametrize(
+    "question,expected_status",
+    [
+        ("Show my cancel bookings", "cancelled"),
+        ("Show my canceled bookings", "cancelled"),
+        ("Show my cancelled bookings", "cancelled"),
+        ("Show my bookings that are cancel", "cancelled"),
+        ("Show my complete bookings", "completed"),
+        ("Show my completed bookings", "completed"),
+        ("Show my upcoming bookings", "upcoming"),
+        ("Show my pending bookings", "pending"),
+    ],
+)
+def test_booking_status_variants_are_normalized(question, expected_status):
+    result = classify(question, "customer")
+
+    assert result.intent == LiveDataIntent.MY_BOOKINGS
+    assert result.entities == {"status": expected_status}
+
+
+@pytest.mark.parametrize(
+    "question,expected_status",
+    [
+        ("Show my cancel payments", "cancelled"),
+        ("Show my canceled payments", "cancelled"),
+        ("Show my cancelled payments", "cancelled"),
+        ("Show my complete payments", "completed"),
+        ("Show my completed payments", "completed"),
+    ],
+)
+def test_payment_status_variants_are_normalized(question, expected_status):
+    result = classify(question, "customer")
+
+    assert result.intent == LiveDataIntent.MY_PAYMENTS
+    assert result.entities == {"status": expected_status}
 
 
 # ---------------------------------------------------------------------------

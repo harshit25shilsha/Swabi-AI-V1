@@ -102,6 +102,20 @@ def test_fetch_my_payments(monkeypatch):
     result = live_data.fetch_my_payments(_jwt())
     assert result["total"] == 2
     assert record[0]["url"].endswith("/payments/my-payments")
+    assert record[0]["params"] == {}
+
+
+def test_fetch_my_payments_with_status_filter(monkeypatch):
+    record: list = []
+    _mock_httpx(
+        monkeypatch,
+        body={"success": True, "data": [{"id": "p1"}]},
+        record=record,
+    )
+
+    live_data.fetch_my_payments(_jwt(), status="completed")
+
+    assert record[0]["params"] == {"status": "completed"}
 
 
 def test_fetch_my_coins(monkeypatch):
@@ -245,6 +259,69 @@ def test_fetch_raises_on_transport_error(monkeypatch):
         live_data.fetch_my_bookings(_jwt())
 
 
+def test_fetch_retries_timeout_and_succeeds(monkeypatch):
+    calls = 0
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url, headers=None, params=None):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise httpx.ReadTimeout("slow first attempt")
+            return _FakeResponse(
+                200,
+                {"success": True, "data": {"bookings": [], "total": 0}},
+            )
+
+    monkeypatch.setattr(
+        "app.capabilities.support.live_data.httpx.Client", FakeClient
+    )
+    monkeypatch.setattr("app.capabilities.support.live_data.time.sleep", lambda _: None)
+
+    result = live_data.fetch_my_bookings(_jwt())
+
+    assert result["total"] == 0
+    assert calls == 2
+
+
+def test_fetch_raises_after_timeout_retry_exhausted(monkeypatch):
+    calls = 0
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url, headers=None, params=None):
+            nonlocal calls
+            calls += 1
+            raise httpx.ReadTimeout("backend still slow")
+
+    monkeypatch.setattr(
+        "app.capabilities.support.live_data.httpx.Client", FakeClient
+    )
+    monkeypatch.setattr("app.capabilities.support.live_data.time.sleep", lambda _: None)
+
+    with pytest.raises(LiveDataFetchError, match="timeout"):
+        live_data.fetch_my_bookings(_jwt())
+
+    assert calls == live_data.LIVE_FETCH_MAX_ATTEMPTS
+
+
 def test_fetch_raises_on_non_dict_response(monkeypatch):
     _mock_httpx(
         monkeypatch,
@@ -302,3 +379,126 @@ def test_fetch_for_intent_dispatch(monkeypatch):
     )
     assert label == "GET /api/bookings/my"
     assert payload["total"] == 0
+
+
+def test_fetch_for_payment_history_omits_unspecified_status(monkeypatch):
+    record: list = []
+    _mock_httpx(
+        monkeypatch,
+        body={"success": True, "data": [{"id": "p1"}]},
+        record=record,
+    )
+
+    live_data.fetch_for_intent(
+        LiveDataIntent.MY_PAYMENTS,
+        user_jwt=_jwt(),
+        entities={},
+    )
+
+    assert record[0]["params"] == {}
+
+
+def test_fetch_latest_enquiry_bids_uses_newest_enquiry(monkeypatch):
+    enquiries = [
+        {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "title": "Older trip",
+            "createdAt": "2026-10-12T10:00:00Z",
+        },
+        {
+            "id": "22222222-2222-4222-8222-222222222222",
+            "title": "Newest trip",
+            "createdAt": "2026-10-13T10:00:00Z",
+        },
+    ]
+    requested_ids: list[str] = []
+    monkeypatch.setattr(
+        live_data,
+        "fetch_my_enquiries",
+        lambda user_jwt: {"enquiries": enquiries, "total": 2},
+    )
+
+    def fake_fetch_bids(user_jwt, enquiry_id):
+        requested_ids.append(enquiry_id)
+        return {"bids": [], "total": 0}
+
+    monkeypatch.setitem(
+        live_data._FETCHERS,
+        LiveDataIntent.MY_ENQUIRY_BIDS,
+        fake_fetch_bids,
+    )
+
+    label, payload = live_data.fetch_for_intent(
+        LiveDataIntent.MY_ENQUIRY_BIDS,
+        user_jwt=_jwt(),
+        entities={},
+    )
+
+    assert requested_ids == ["22222222-2222-4222-8222-222222222222"]
+    assert "GET /api/enquiries/my" in label
+    assert payload["enquiry"]["title"] == "Newest trip"
+    assert payload["total"] == 0
+    from app.capabilities.support.live_data_format import format_for_intent
+
+    answer = format_for_intent(LiveDataIntent.MY_ENQUIRY_BIDS, payload)
+    assert "Newest trip" in answer
+    assert "No bids have been received on" in answer
+    assert "any of your enquiries" not in answer
+
+
+def test_fetch_latest_enquiry_bids_handles_no_enquiries(monkeypatch):
+    monkeypatch.setattr(
+        live_data,
+        "fetch_my_enquiries",
+        lambda user_jwt: {"enquiries": [], "total": 0},
+    )
+    monkeypatch.setitem(
+        live_data._FETCHERS,
+        LiveDataIntent.MY_ENQUIRY_BIDS,
+        lambda *_: pytest.fail("bids endpoint should not be called"),
+    )
+
+    label, payload = live_data.fetch_for_intent(
+        LiveDataIntent.MY_ENQUIRY_BIDS,
+        user_jwt=_jwt(),
+        entities={},
+    )
+
+    assert label == "GET /api/enquiries/my"
+    assert payload["enquiry"] is None
+
+
+@pytest.mark.parametrize(
+    "intent,status",
+    [
+        (LiveDataIntent.MY_BOOKINGS, "cancel"),
+        (LiveDataIntent.MY_BOOKINGS, "canceled"),
+        (LiveDataIntent.MY_BOOKINGS, "cancelled"),
+        (LiveDataIntent.MY_BOOKINGS, "complete"),
+        (LiveDataIntent.MY_BOOKINGS, "completed"),
+        (LiveDataIntent.MY_PAYMENTS, "cancel"),
+        (LiveDataIntent.MY_PAYMENTS, "canceled"),
+        (LiveDataIntent.MY_PAYMENTS, "complete"),
+    ],
+)
+def test_fetch_for_intent_normalizes_status_aliases(
+    monkeypatch, intent, status
+):
+    record: list = []
+    _mock_httpx(
+        monkeypatch,
+        body={"success": True, "data": {"bookings": [], "total": 0}},
+        record=record,
+    )
+
+    live_data.fetch_for_intent(
+        intent,
+        user_jwt=_jwt(),
+        entities={"status": status},
+    )
+
+    expected = (
+        "cancelled" if status in {"cancel", "canceled", "cancelled"}
+        else "completed"
+    )
+    assert record[0]["params"]["status"] == expected

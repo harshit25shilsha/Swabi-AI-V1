@@ -43,16 +43,20 @@ into other punctuation.
 
 CUSTOMER INTENTS (only meaningful when audience is "customer"):
 - my_bookings: list or filter the user's own bookings or trips.
-  If the user asks for pending, upcoming, or cancelled bookings, extract
-  "status" with that value.
+  Normalize cancel/canceled/cancelled to "cancelled", complete/completed
+  to "completed", and extract pending or upcoming as those canonical
+  status values when the user asks for that booking status.
 - my_booking_detail: details or status for one specific booking.
   Extract its UUID as "booking_id" when present. Do not use a booking code
   as a UUID.
 - my_payments: the user's payment history.
-  Extract "status" when the user asks for pending, completed, cancelled,
-  or failed payments.
+  Normalize cancel/canceled/cancelled to "cancelled" and
+  complete/completed to "completed". Extract pending or failed as those
+  status values when requested.
 - my_enquiry_bids: bids or proposals received on one of the user's enquiries.
-  Extract the enquiry UUID as "enquiry_id" when present.
+  Extract the enquiry UUID as "enquiry_id" when present. If no enquiry is
+  specified, return this intent with empty entities; the service will fetch
+  bids for the user's most recently created enquiry only.
 - my_coins: the user's Swabi coin balance.
 - my_coin_history: the user's Swabi coin transaction history.
 - my_enquiries: the user's posted enquiries or trip requests.
@@ -111,6 +115,14 @@ Output: {"intent":"my_bookings","entities":{},"confidence":0.95}
 Audience: customer
 Question: "Show my pending packages"
 Output: {"intent":"my_bookings","entities":{"status":"pending"},"confidence":0.92}
+
+Audience: customer
+Question: "Show my cancel bookings"
+Output: {"intent":"my_bookings","entities":{"status":"cancelled"},"confidence":0.92}
+
+Audience: customer
+Question: "Show my complete payments"
+Output: {"intent":"my_payments","entities":{"status":"completed"},"confidence":0.92}
 
 Audience: customer
 Question: "What is the status of booking 46f46148-e88d-42b6-bbd4-d87f14009f65?"

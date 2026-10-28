@@ -103,7 +103,8 @@ def _extract_booking_id(q: str) -> str | None:
 
 # Supported by the backend: bookings = all|cancelled|pending|upcoming
 _BOOKING_STATUS_MAP: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"\bcancell?ed\b", re.I), "cancelled"),
+    (re.compile(r"\bcancel(?:l?ed)?\b", re.I), "cancelled"),
+    (re.compile(r"\bcomplete(?:d)?\b", re.I), "completed"),
     (re.compile(r"\bpending\b", re.I), "pending"),
     (re.compile(r"\bupcoming\b", re.I), "upcoming"),
 ]
@@ -111,9 +112,9 @@ _BOOKING_STATUS_MAP: list[tuple[re.Pattern[str], str]] = [
 # Supported by the backend: payments = pending|completed|cancelled.
 # "failed" is mapped to "cancelled" because the backend has no failed state.
 _PAYMENT_STATUS_MAP: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"\bcancell?ed\b", re.I), "cancelled"),
+    (re.compile(r"\bcancel(?:l?ed)?\b", re.I), "cancelled"),
     (re.compile(r"\bfailed\b", re.I), "cancelled"),
-    (re.compile(r"\bcompleted?\b", re.I), "completed"),
+    (re.compile(r"\bcomplete(?:d)?\b", re.I), "completed"),
     (re.compile(r"\bpending\b", re.I), "pending"),
 ]
 
@@ -155,8 +156,7 @@ _CUSTOMER_CONTEXT_PATTERNS = [
 
 
 # ---------------------------------------------------------------------------
-# Context patterns for the ID-required intents. The ID must be extractable
-# for these to fire; otherwise they fall through to the list form.
+# Context patterns for intents that can use an ID when one is provided.
 # ---------------------------------------------------------------------------
 
 _MY_BOOKING_DETAIL_CONTEXT = [
@@ -166,6 +166,11 @@ _MY_BOOKING_DETAIL_CONTEXT = [
 
 _MY_ENQUIRY_BIDS_CONTEXT = [
     re.compile(r"\bbids?\s+(on|for)\s+(my\s+|the\s+)?enquir", re.I),
+    re.compile(
+        r"\bbids?\s+(on|for)\s+(?:my\s+)?(?:any\s+)?(?:one\s+)?"
+        r"(?:single\s+)?enquir",
+        re.I,
+    ),
     re.compile(r"\bwho\s+bid\s+(on|for)\s+(my\s+|the\s+)?enquir", re.I),
     re.compile(r"\bproposals?\s+(on|for)\s+(my\s+|the\s+)?enquir", re.I),
     re.compile(r"\benquir(y|ies)\s+bids?\b", re.I),
@@ -182,11 +187,18 @@ _MY_BOOKINGS = [
     re.compile(r"\bstatus\s+of\s+my\s+booking\b", re.I),
     re.compile(r"\bshow\s+(me\s+)?my\s+(bookings?|trips?)\b", re.I),
     re.compile(
-        r"\bmy\s+(upcoming|pending|cancelled|past)\s+(bookings?|trips?)\b",
+        r"\bmy\s+(upcoming|pending|cancel(?:l?ed)?|complete(?:d)?|past)"
+        r"\s+(bookings?|trips?)\b",
         re.I,
     ),
     re.compile(
-        r"\bshow\s+(me\s+)?my\s+(upcoming|pending|cancelled|past)\s+"
+        r"\bmy\s+(bookings?|trips?)\s+(?:that are\s+|with\s+status\s+)?"
+        r"(upcoming|pending|cancel(?:l?ed)?|complete(?:d)?)\b",
+        re.I,
+    ),
+    re.compile(
+        r"\bshow\s+(me\s+)?my\s+"
+        r"(upcoming|pending|cancel(?:l?ed)?|complete(?:d)?|past)\s+"
         r"packages?\b",
         re.I,
     ),
@@ -211,7 +223,14 @@ _MY_PAYMENTS = [
     re.compile(r"\bhow\s+much\s+did\s+i\s+pay\b", re.I),
     re.compile(r"\bpayment\s+history\b", re.I),
     re.compile(
-        r"\bmy\s+(pending|completed|cancelled|failed)\s+payments?\b", re.I
+        r"\bmy\s+(pending|complete(?:d)?|cancel(?:l?ed)?|failed)\s+"
+        r"payments?\b",
+        re.I,
+    ),
+    re.compile(
+        r"\bmy\s+payments?\s+(?:that are\s+|with\s+status\s+)?"
+        r"(pending|complete(?:d)?|cancel(?:l?ed)?|failed)\b",
+        re.I,
     ),
 ]
 
@@ -341,13 +360,12 @@ def classify(question: str, audience: str) -> ClassifiedIntent:
         # MY_ENQUIRY_BIDS requires both bids context and an enquiry ID.
         if _matches(_MY_ENQUIRY_BIDS_CONTEXT, q):
             enquiry_id = _extract_uuid(q)
-            if enquiry_id:
-                return ClassifiedIntent(
-                    LiveDataIntent.MY_ENQUIRY_BIDS,
-                    {"enquiry_id": enquiry_id},
-                    reason="enquiry bids",
-                )
-            # No ID found — fall through to MY_ENQUIRIES.
+            entities = {"enquiry_id": enquiry_id} if enquiry_id else {}
+            return ClassifiedIntent(
+                LiveDataIntent.MY_ENQUIRY_BIDS,
+                entities,
+                reason="enquiry bids",
+            )
 
         if _matches(_MY_COIN_HISTORY, q):
             return ClassifiedIntent(
