@@ -51,6 +51,30 @@ def test_metadata_attached():
     assert c.metadata.area.value == "swabi"
     assert c.metadata.audience.value == "both"
     assert c.metadata.category == "A"
+    assert c.metadata.policy_id == "alpha-policy"
+    assert c.metadata.policy_status == "approved"
+    assert c.metadata.effective_from == "2026-01-01"
+
+
+def test_non_policy_chunk_is_marked_not_applicable():
+    r = ingest(CONFIG, chunk_size_cap=10_000)
+    travel = next(
+        c for c in r.chunks if c.metadata.section_id == "9.1.kashmir"
+    )
+    assert travel.metadata.policy_status == "not_applicable"
+
+
+def test_withdrawn_policy_is_not_ingested(tmp_path):
+    import yaml
+
+    cfg = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    cfg["sections"][0]["policy_lifecycle"]["status"] = "withdrawn"
+    path = tmp_path / "c.yaml"
+    path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    result = ingest(path, chunk_size_cap=10_000)
+    assert "1.1" not in {c.metadata.section_id for c in result.chunks}
+    assert any("withdrawn policy alpha-policy" in x
+               for x in result.report.excluded)
 
 
 def test_chunk_id_deterministic():

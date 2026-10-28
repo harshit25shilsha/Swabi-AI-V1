@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, date, datetime, time
 from typing import Any
 
 from app.core.config import settings
@@ -13,6 +14,48 @@ log = get_logger(__name__)
 
 class QdrantStoreError(Exception):
     pass
+
+
+def _current_content_filter(today: date):
+    from qdrant_client.http import models as rest  # noqa: PLC0415
+
+    start_of_today = datetime.combine(today, time.min, tzinfo=UTC)
+    end_of_today = datetime.combine(today, time.max, tzinfo=UTC)
+    policy_is_current = rest.Filter(
+        must=[
+            rest.FieldCondition(
+                key="policy_status",
+                match=rest.MatchValue(value="approved"),
+            ),
+            rest.FieldCondition(
+                key="effective_from",
+                range=rest.DatetimeRange(lte=end_of_today),
+            ),
+        ],
+        should=[
+            rest.FieldCondition(
+                key="expires_on",
+                range=rest.DatetimeRange(gte=start_of_today),
+            ),
+            rest.IsNullCondition(
+                is_null=rest.PayloadField(key="expires_on"),
+            ),
+        ],
+    )
+    non_policy = rest.FieldCondition(
+        key="policy_status",
+        match=rest.MatchValue(value="not_applicable"),
+    )
+    return rest.Filter(should=[non_policy, policy_is_current])
+
+
+def _qdrant_datetime(value: str | None) -> str | None:
+    if value is None:
+        return None
+    parsed = date.fromisoformat(value)
+    return datetime.combine(parsed, time.min, tzinfo=UTC).isoformat(
+        timespec="seconds",
+    ).replace("+00:00", "Z")
 
 
 class QdrantStore:
@@ -91,15 +134,29 @@ class QdrantStore:
         name = self.versioned_name(version)
         client = self._get_client()
         existing = {c.name for c in client.get_collections().collections}
-        if name in existing:
-            return
-        client.create_collection(
-            collection_name=name,
-            vectors_config=rest.VectorParams(
-                size=dim,
-                distance=rest.Distance.COSINE,
-            ),
-        )
+        if name not in existing:
+            client.create_collection(
+                collection_name=name,
+                vectors_config=rest.VectorParams(
+                    size=dim,
+                    distance=rest.Distance.COSINE,
+                ),
+            )
+
+        payload_schema = client.get_collection(name).payload_schema or {}
+        indexes = {
+            "policy_status": rest.PayloadSchemaType.KEYWORD,
+            "effective_from": rest.PayloadSchemaType.DATETIME,
+            "expires_on": rest.PayloadSchemaType.DATETIME,
+        }
+        for field_name, schema in indexes.items():
+            if field_name not in payload_schema:
+                client.create_payload_index(
+                    collection_name=name,
+                    field_name=field_name,
+                    field_schema=schema,
+                    wait=True,
+                )
 
     def upsert_chunks(
         self,
@@ -225,7 +282,11 @@ class QdrantStore:
                 key="area",
                 match=rest.MatchAny(any=[area, "both"]),
             ))
-        query_filter = rest.Filter(must=must) if must else None
+        query_filter = rest.Filter(
+            must=[*must, _current_content_filter(
+                datetime.now(UTC).date(),
+            )],
+        )
 
         response = client.query_points(
             collection_name=self.alias_name(),
@@ -280,6 +341,11 @@ def _payload(chunk: Chunk) -> dict[str, Any]:
         "source": m.source,
         "source_version": m.source_version,
         "last_updated": m.last_updated,
+        "policy_id": m.policy_id,
+        "policy_status": m.policy_status,
+        "effective_from": _qdrant_datetime(m.effective_from),
+        "expires_on": _qdrant_datetime(m.expires_on),
+        "supersedes": m.supersedes,
         "destination": m.destination,
         "activity": m.activity,
         "review_flag_ids": [f.id for f in m.review_flags if f.id],

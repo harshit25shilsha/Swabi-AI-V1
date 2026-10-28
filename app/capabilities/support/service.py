@@ -523,13 +523,6 @@ def ask(
             "support_forbidden_paths_stripped",
             extra={"q_hash": q_hash, "removed": removed_paths},
         )
-        return _fallback(
-            answer=_INSUFFICIENT_MESSAGE,
-            answer_type=AnswerType.INSUFFICIENT_CONTEXT,
-            knowledge_version=version.local_version,
-            live_data_used=live_data_used,
-            live_data_sources=live_data_sources,
-        )
 
     if (
         llm_out.answer_type == AnswerType.ANSWERED

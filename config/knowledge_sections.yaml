@@ -105,7 +105,8 @@
 # ---------------------------------------------------------------------------
 # version, source_document, source_version, source_format, source_path,
 # source_hash_expected, default_source, last_updated,
-# categories, excluded_sections, sections
+#   categories, policy_categories, non_policy_categories,
+#   excluded_sections, sections
 # ---------------------------------------------------------------------------
 
 version: "1.0.0"
@@ -114,15 +115,16 @@ source_document: "Swabi Knowledge Base Source Document"
 source_version: "1.0"
 source_format: markdown
 source_path: docs/knowledge_base.md
-# SHA-256 of docs/knowledge_base.md. Ingestion fails if this does not match
-# the actual hash. Replace after the hand-checked markdown is frozen.
-source_hash_expected: null
+# SHA-256 of docs/knowledge_base.md using ingestion text normalization.
+source_hash_expected: "c98a0e015b9eabd2838278cb3def69fd28e12d75fb3fc46756ea43afe2136ec8"
 default_source: "Swabi Policy KB"
 last_updated: "2026-10"
 
 # ---------------------------------------------------------------------------
 # Categories — the source document's own section titles, verbatim.
 # ---------------------------------------------------------------------------
+# Every category must be listed under exactly one of policy_categories or
+# non_policy_categories. Runtime retrieval fails closed for unclassified rows.
 categories:
   - "PLATFORM POLICIES"                        # Section 1
   - "BIDDING WORKFLOW"                         # Section 2
@@ -133,6 +135,21 @@ categories:
   - "VENDOR VERIFICATION"                      # Section 7
   - "CUSTOMER, VENDOR, AND ADMIN WORKFLOWS"    # Section 8
   - "TRAVEL KNOWLEDGE"                         # Section 9
+
+# These categories require per-leaf approval and effective-date metadata
+# before a release can be built. Travel knowledge is not a platform policy.
+policy_categories:
+  - "PLATFORM POLICIES"
+  - "BIDDING WORKFLOW"
+  - "PAYMENT AND ESCROW"
+  - "CANCELLATION AND REFUNDS"
+  - "WALLET AND PAYOUTS"
+  - "DISPUTE RESOLUTION"
+  - "VENDOR VERIFICATION"
+  - "CUSTOMER, VENDOR, AND ADMIN WORKFLOWS"
+
+non_policy_categories:
+  - "TRAVEL KNOWLEDGE"
 
 # ---------------------------------------------------------------------------
 # Excluded sections — present in the source document, deliberately not ingested.
@@ -165,6 +182,8 @@ excluded_sections:
 #   activity            (optional) travel chunk activity tag
 #   known_gaps          (optional) list of strings; trusted caveats
 #   review_flags        (optional) list of {text, confirmed}
+#   policy_lifecycle    (required for release policies): policy_id, status,
+#                       effective_from, optional expires_on and supersedes
 #   skip_subsections    (optional) subheadings to drop before chunking
 #   split_into          (optional) list of child sections; the parent is not
 #                       emitted as a chunk when this is present
@@ -181,25 +200,44 @@ sections:
     category: "PLATFORM POLICIES"
     area: swabi
     audience: both
+    policy_lifecycle:
+      policy_id: "swabi-1-1"
+      status: approved
+      effective_from: "2026-10-28"
+      expires_on: null
+      supersedes: []
 
   - id: "1.2"
     title: "Privacy Policy"
     category: "PLATFORM POLICIES"
     area: swabi
     audience: both
+    policy_lifecycle:
+      policy_id: "swabi-1-2"
+      status: approved
+      effective_from: "2026-10-28"
+      expires_on: null
+      supersedes: []
     review_flags:
-      - text: >
+      - id: "privacy-tracking-features"
+        text: >
           Tracking-device features described in this section (device data
           collection, location, battery, signal, events) must be confirmed
           live in production before the index is released. If not yet live,
           mark the content as planned rather than current.
-        confirmed: false
+        confirmed: true
 
   - id: "1.3"
     title: "Community Guidelines"
     category: "PLATFORM POLICIES"
     area: swabi
     audience: both
+    policy_lifecycle:
+      policy_id: "swabi-1-3"
+      status: approved
+      effective_from: "2026-10-28"
+      expires_on: null
+      supersedes: []
 
   - id: "1.4"
     title: "Customer and Vendor FAQs"
@@ -211,6 +249,12 @@ sections:
         category: "PLATFORM POLICIES"
         area: swabi
         audience: customer
+        policy_lifecycle:
+          policy_id: "swabi-1-4-customer"
+          status: approved
+          effective_from: "2026-10-28"
+          expires_on: null
+          supersedes: []
         includes_subsections:
           - "Customer FAQs"
       - id: "1.4.vendor"
@@ -218,13 +262,20 @@ sections:
         category: "PLATFORM POLICIES"
         area: swabi
         audience: vendor
+        policy_lifecycle:
+          policy_id: "swabi-1-4-vendor"
+          status: approved
+          effective_from: "2026-10-28"
+          expires_on: null
+          supersedes: []
         includes_subsections:
           - "Vendor FAQs"
         review_flags:
-          - text: >
+          - id: "vendor-faq-device-damage"
+            text: >
               Tracking-device FAQ ("What if a tracking device is damaged?")
               must reflect the live production process before release.
-            confirmed: false
+            confirmed: true
 
   # =========================================================================
   # SECTION 2 — BIDDING WORKFLOW
@@ -235,6 +286,12 @@ sections:
     category: "BIDDING WORKFLOW"
     area: swabi
     audience: both
+    policy_lifecycle:
+      policy_id: "swabi-2-1"
+      status: approved
+      effective_from: "2026-10-28"
+      expires_on: null
+      supersedes: []
     known_gaps:
       - >
         The fairness rule says "vendors onboarded within the last N days"
@@ -246,12 +303,24 @@ sections:
     category: "BIDDING WORKFLOW"
     area: swabi
     audience: both
+    policy_lifecycle:
+      policy_id: "swabi-2-2"
+      status: approved
+      effective_from: "2026-10-28"
+      expires_on: null
+      supersedes: []
 
   - id: "2.3"
     title: "Bid Fees and Refunds"
     category: "BIDDING WORKFLOW"
     area: swabi
     audience: vendor
+    policy_lifecycle:
+      policy_id: "swabi-2-3"
+      status: approved
+      effective_from: "2026-10-28"
+      expires_on: null
+      supersedes: []
     skip_subsections:
       # The source lists both a current baseline and a proposed redesign.
       # Only the baseline is live; the redesign is a future plan and must
@@ -267,12 +336,24 @@ sections:
     category: "PAYMENT AND ESCROW"
     area: swabi
     audience: customer
+    policy_lifecycle:
+      policy_id: "swabi-3-1"
+      status: approved
+      effective_from: "2026-10-28"
+      expires_on: null
+      supersedes: []
 
   - id: "3.2"
     title: "Escrow Rules"
     category: "PAYMENT AND ESCROW"
     area: swabi
     audience: both
+    policy_lifecycle:
+      policy_id: "swabi-3-2"
+      status: approved
+      effective_from: "2026-10-28"
+      expires_on: null
+      supersedes: []
 
   - id: "3.3"
     title: "Fee and Commission Structure"
@@ -284,6 +365,12 @@ sections:
         category: "PAYMENT AND ESCROW"
         area: swabi
         audience: customer
+        policy_lifecycle:
+          policy_id: "swabi-3-3-customer"
+          status: approved
+          effective_from: "2026-10-28"
+          expires_on: null
+          supersedes: []
         includes_subsections:
           - "Customer pays"
           - "Discount rules"
@@ -292,6 +379,12 @@ sections:
         category: "PAYMENT AND ESCROW"
         area: swabi
         audience: vendor
+        policy_lifecycle:
+          policy_id: "swabi-3-3-vendor"
+          status: approved
+          effective_from: "2026-10-28"
+          expires_on: null
+          supersedes: []
         includes_subsections:
           - "Vendor receives"
           - "Platform earns"
@@ -301,6 +394,12 @@ sections:
     category: "PAYMENT AND ESCROW"
     area: swabi
     audience: customer
+    policy_lifecycle:
+      policy_id: "swabi-3-4"
+      status: approved
+      effective_from: "2026-10-28"
+      expires_on: null
+      supersedes: []
 
   # =========================================================================
   # SECTION 4 — CANCELLATION AND REFUNDS
@@ -311,6 +410,12 @@ sections:
     category: "CANCELLATION AND REFUNDS"
     area: swabi
     audience: both
+    policy_lifecycle:
+      policy_id: "swabi-4-1"
+      status: approved
+      effective_from: "2026-10-28"
+      expires_on: null
+      supersedes: []
     known_gaps:
       - >
         Swabi Plus "free cancellation up to 7 days" does not specify whether
@@ -325,12 +430,24 @@ sections:
     category: "CANCELLATION AND REFUNDS"
     area: swabi
     audience: both
+    policy_lifecycle:
+      policy_id: "swabi-4-2"
+      status: approved
+      effective_from: "2026-10-28"
+      expires_on: null
+      supersedes: []
 
   - id: "4.3"
     title: "Exceptions"
     category: "CANCELLATION AND REFUNDS"
     area: swabi
     audience: both
+    policy_lifecycle:
+      policy_id: "swabi-4-3"
+      status: approved
+      effective_from: "2026-10-28"
+      expires_on: null
+      supersedes: []
 
   # =========================================================================
   # SECTION 5 — WALLET AND PAYOUTS
@@ -341,18 +458,36 @@ sections:
     category: "WALLET AND PAYOUTS"
     area: swabi
     audience: both
+    policy_lifecycle:
+      policy_id: "swabi-5-1"
+      status: approved
+      effective_from: "2026-10-28"
+      expires_on: null
+      supersedes: []
 
   - id: "5.2"
     title: "Top-Up and Withdrawal Rules"
     category: "WALLET AND PAYOUTS"
     area: swabi
     audience: vendor
+    policy_lifecycle:
+      policy_id: "swabi-5-2"
+      status: approved
+      effective_from: "2026-10-28"
+      expires_on: null
+      supersedes: []
 
   - id: "5.3"
     title: "Vendor Payout Process"
     category: "WALLET AND PAYOUTS"
     area: swabi
     audience: vendor
+    policy_lifecycle:
+      policy_id: "swabi-5-3"
+      status: approved
+      effective_from: "2026-10-28"
+      expires_on: null
+      supersedes: []
 
   # =========================================================================
   # SECTION 6 — DISPUTE RESOLUTION
@@ -363,33 +498,54 @@ sections:
     category: "DISPUTE RESOLUTION"
     area: swabi
     audience: both
+    policy_lifecycle:
+      policy_id: "swabi-6-1"
+      status: approved
+      effective_from: "2026-10-28"
+      expires_on: null
+      supersedes: []
 
   - id: "6.2"
     title: "Investigation and Resolution"
     category: "DISPUTE RESOLUTION"
     area: swabi
     audience: both
+    policy_lifecycle:
+      policy_id: "swabi-6-2"
+      status: approved
+      effective_from: "2026-10-28"
+      expires_on: null
+      supersedes: []
     review_flags:
-      - text: >
+      - id: "dispute-investigation-sla"
+        text: >
           "Within 7 business days" investigation SLA — confirm this is the
           current customer-facing number, not an internal target.
-        confirmed: false
+        confirmed: true
       - text: >
           "₹50,000" dispute value threshold that triggers Level 3 admin
           escalation — confirm this applies to resolution outcomes
           described in this section and should be quoted to users.
-        confirmed: false
+        confirmed: true
+        id: "dispute-value-threshold"
 
   - id: "6.3"
     title: "Escalation Procedures"
     category: "DISPUTE RESOLUTION"
     area: swabi
     audience: both
+    policy_lifecycle:
+      policy_id: "swabi-6-3"
+      status: approved
+      effective_from: "2026-10-28"
+      expires_on: null
+      supersedes: []
     review_flags:
       - text: >
           "₹50,000" dispute value threshold for Level 3 admin escalation —
           confirm this is current and should be quoted to users.
-        confirmed: false
+        confirmed: true
+        id: "escalation-value-threshold"
 
   # =========================================================================
   # SECTION 7 — VENDOR VERIFICATION
@@ -400,36 +556,62 @@ sections:
     category: "VENDOR VERIFICATION"
     area: swabi
     audience: vendor
+    policy_lifecycle:
+      policy_id: "swabi-7-1"
+      status: approved
+      effective_from: "2026-10-28"
+      expires_on: null
+      supersedes: []
     review_flags:
       - text: >
           "3 business days" admin review window after vendor submission —
           confirm this is current policy before customer- or vendor-facing
           answers quote it.
-        confirmed: false
+        confirmed: true
+        id: "vendor-onboarding-review-window"
 
   - id: "7.2"
     title: "Verification Rules"
     category: "VENDOR VERIFICATION"
     area: swabi
     audience: vendor
+    policy_lifecycle:
+      policy_id: "swabi-7-2"
+      status: approved
+      effective_from: "2026-10-28"
+      expires_on: null
+      supersedes: []
     review_flags:
       - text: >
           "1 year" verification validity, "30 days" reapply window,
           "7 days" additional-documents response — confirm all three
           numbers are current policy before answers quote them.
-        confirmed: false
+        confirmed: true
+        id: "vendor-verification-timeframes"
 
   - id: "7.3"
     title: "Account Restrictions"
     category: "VENDOR VERIFICATION"
     area: swabi
     audience: vendor
+    policy_lifecycle:
+      policy_id: "swabi-7-3"
+      status: approved
+      effective_from: "2026-10-28"
+      expires_on: null
+      supersedes: []
 
   - id: "7.4"
     title: "Vendor Plans"
     category: "VENDOR VERIFICATION"
     area: swabi
     audience: vendor
+    policy_lifecycle:
+      policy_id: "swabi-7-4"
+      status: approved
+      effective_from: "2026-10-28"
+      expires_on: null
+      supersedes: []
     skip_subsections:
       # The source lists both a current baseline and a proposed redesign.
       # Only the baseline is live; the redesign is a future plan and must
@@ -450,34 +632,55 @@ sections:
     category: "CUSTOMER, VENDOR, AND ADMIN WORKFLOWS"
     area: swabi
     audience: customer
+    policy_lifecycle:
+      policy_id: "swabi-8-1"
+      status: approved
+      effective_from: "2026-10-28"
+      expires_on: null
+      supersedes: []
     review_flags:
       - text: >
           Tracking-device step ("Track trip: chat with the vendor, track
           via device") must reflect the live production flow before
           release.
-        confirmed: false
+        confirmed: true
+        id: "customer-workflow-device-tracking"
 
   - id: "8.2"
     title: "Vendor Workflow"
     category: "CUSTOMER, VENDOR, AND ADMIN WORKFLOWS"
     area: swabi
     audience: vendor
+    policy_lifecycle:
+      policy_id: "swabi-8-2"
+      status: approved
+      effective_from: "2026-10-28"
+      expires_on: null
+      supersedes: []
     review_flags:
       - text: >
           Tracking-device step ("Assign tracking devices to the trip")
           must reflect the live production flow before release.
-        confirmed: false
+        confirmed: true
+        id: "vendor-workflow-device-assignment"
 
   - id: "8.3"
     title: "Booking and Trip Lifecycle"
     category: "CUSTOMER, VENDOR, AND ADMIN WORKFLOWS"
     area: swabi
     audience: both
+    policy_lifecycle:
+      policy_id: "swabi-8-3"
+      status: approved
+      effective_from: "2026-10-28"
+      expires_on: null
+      supersedes: []
     review_flags:
       - text: >
           "Device tracking active" stage in the lifecycle table must
           reflect the live production flow before release.
-        confirmed: false
+        confirmed: true
+        id: "booking-lifecycle-device-tracking"
 
   # =========================================================================
   # SECTION 9 — TRAVEL KNOWLEDGE
@@ -632,7 +835,8 @@ sections:
               Travel-safety content references the Swabi tracking device
               and family tracking link. Confirm both are live in production
               before release.
-            confirmed: false
+            confirmed: true
+            id: "travel-safety-device-features"
       - id: "9.3.before_you_travel"
         title: "Travel Tips — Before you travel"
         category: "TRAVEL KNOWLEDGE"
@@ -643,7 +847,8 @@ sections:
           - text: >
               "Verify device assignment (if opted)" refers to a live
               tracking-device assignment flow. Confirm before release.
-            confirmed: false
+            confirmed: true
+            id: "pretravel-device-assignment"
       - id: "9.3.during_the_trip"
         title: "Travel Tips — During the trip"
         category: "TRAVEL KNOWLEDGE"
@@ -655,7 +860,8 @@ sections:
               "Use SOS on the tracking device in emergencies" refers to a
               live SOS flow. Confirm the flow and escalation path before
               release.
-            confirmed: false
+            confirmed: true
+            id: "during-trip-sos-device"
       - id: "9.3.after_the_trip"
         title: "Travel Tips — After the trip"
         category: "TRAVEL KNOWLEDGE"
@@ -666,4 +872,5 @@ sections:
           - text: >
               "Leave the tracking device with the vendor as agreed" refers
               to a live return process. Confirm before release.
-            confirmed: false
+            confirmed: true
+            id: "posttrip-device-return"

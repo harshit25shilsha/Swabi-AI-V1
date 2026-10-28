@@ -1,6 +1,7 @@
 """Qdrant store tests. qdrant-client is mocked."""
 from __future__ import annotations
 
+from datetime import date
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -9,6 +10,7 @@ import pytest
 from app.rag.qdrant_store import (
     QdrantStore,
     QdrantStoreError,
+    _current_content_filter,
     _payload,
     _point_id,
 )
@@ -65,10 +67,59 @@ def test_payload_has_required_fields():
     for key in ("chunk_id", "document_id", "category", "section_id",
                 "section_title", "section_path", "area", "audience",
                 "source", "source_version", "last_updated", "text",
-                "review_flag_ids"):
+                "review_flag_ids", "policy_id", "policy_status",
+                "effective_from", "expires_on", "supersedes"):
         assert key in p, f"missing payload key: {key}"
     assert p["area"] == "swabi"
     assert p["audience"] == "both"
+    assert p["policy_status"] == "not_applicable"
+
+
+def test_payload_formats_policy_dates_for_qdrant_datetime_index():
+    chunk = _chunk("1.1", "policy")
+    chunk.metadata.policy_id = "policy-1"
+    chunk.metadata.policy_status = "approved"
+    chunk.metadata.effective_from = "2026-10-01"
+    chunk.metadata.expires_on = "2026-10-31"
+
+    payload = _payload(chunk)
+    assert payload["effective_from"] == "2026-10-01T00:00:00Z"
+    assert payload["expires_on"] == "2026-10-31T00:00:00Z"
+
+
+def test_current_content_filter_allows_nonpolicy_and_active_policies_only():
+    query_filter = _current_content_filter(date(2026, 10, 28))
+    branches = query_filter.should
+    assert len(branches) == 2
+
+    non_policy = branches[0]
+    assert non_policy.key == "policy_status"
+    assert non_policy.match.value == "not_applicable"
+
+    active_policy = branches[1]
+    must_by_key = {condition.key: condition for condition in active_policy.must}
+    assert must_by_key["policy_status"].match.value == "approved"
+    assert must_by_key["effective_from"].range.lte.date() == date(2026, 10, 28)
+    assert len(active_policy.should) == 2
+    expiry_range, no_expiry = active_policy.should
+    assert expiry_range.range.gte.date() == date(2026, 10, 28)
+    assert no_expiry.is_null.key == "expires_on"
+
+
+def test_ensure_collection_creates_policy_lifecycle_indexes():
+    store = QdrantStore(collection="c")
+    client = MagicMock()
+    client.get_collections.return_value.collections = []
+    client.get_collection.return_value.payload_schema = {}
+    with patch.object(store, "_get_client", return_value=client):
+        store.ensure_collection("v1", dim=384)
+
+    assert client.create_collection.call_count == 1
+    indexed_fields = {
+        call.kwargs["field_name"]
+        for call in client.create_payload_index.call_args_list
+    }
+    assert indexed_fields == {"policy_status", "effective_from", "expires_on"}
 
 
 
