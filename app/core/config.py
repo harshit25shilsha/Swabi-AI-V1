@@ -69,7 +69,7 @@ class Settings(BaseSettings):
 
     # Feature flags
 
-    enable_rag: bool = False
+    enable_rag: bool = True
     enable_tools: bool = False
     enable_evaluation: bool = False
 
@@ -82,7 +82,7 @@ class Settings(BaseSettings):
     qdrant_collection: str = "swabi_chunks"
     qdrant_timeout: int = 30
 
-    rag_embedding_model: str = "intfloat/multilingual-e5-small"
+    rag_embedding_model: str = "BAAI/bge-small-en-v1.5"
     rag_embedding_dim: int = 384
     rag_embedding_batch_size: int = 32
 

@@ -420,7 +420,6 @@ def _fmt_activity_search(payload: dict[str, Any]) -> str:
         location = ", ".join(
             x for x in [a.get("state"), a.get("country")] if x
         ) or "—"
-        name = a.get("name") or "(unnamed activity)"
         lines.append(
             f"- \"{_s(a.get('name'))}\" | {_s(a.get('category'))} | "
             f"{_s(location)} | "
