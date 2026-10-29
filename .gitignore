@@ -136,3 +136,5 @@ qdrant_storage/
 
 # Standalone embedding artifacts produced outside data/rag_index/
 *.npy
+
+retrieval-report.json

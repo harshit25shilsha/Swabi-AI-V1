@@ -1,0 +1,121 @@
+{
+  "name": "swabi-rag-retrieval-v1",
+  "cases": [
+    {
+      "id": "terms-of-service",
+      "input": "What do I agree to when I create an account and place a bid?",
+      "expected": {"relevant_chunk_ids": ["f1d45b9160cedcb7"]},
+      "metadata": {"audience": "customer", "area": "swabi"}
+    },
+    {
+      "id": "customer-cancellation-faq",
+      "input": "I paid for a trip but need to cancel. How is my refund decided?",
+      "expected": {"relevant_chunk_ids": ["7d82d3be07e6b778"]},
+      "metadata": {"audience": "customer", "area": "swabi"}
+    },
+    {
+      "id": "enquiry-and-bidding",
+      "input": "What happens after a customer posts a trip enquiry?",
+      "expected": {"relevant_chunk_ids": ["47c29ba71be7e11c"]},
+      "metadata": {"audience": "customer", "area": "swabi"}
+    },
+    {
+      "id": "escrow-milestones",
+      "input": "When does the vendor receive money held in escrow?",
+      "expected": {"relevant_chunk_ids": ["deedb842b9015315"]},
+      "metadata": {"audience": "vendor", "area": "swabi"}
+    },
+    {
+      "id": "cancellation-refunds",
+      "input": "How much of the booking amount is refunded when cancelling early?",
+      "expected": {"relevant_chunk_ids": ["8815990313899e0c"]},
+      "metadata": {"audience": "customer", "area": "swabi"}
+    },
+    {
+      "id": "vendor-payouts",
+      "input": "How do vendors withdraw their payout after a trip?",
+      "expected": {
+        "relevant_chunk_ids": [
+          "3b9cd5e35fca7726",
+          "dfc03cb4a7b33ef9",
+          "deedb842b9015315",
+          "00ff3e8b795c4478",
+          "863d145f20890b30"
+        ]
+      },
+      "metadata": {"audience": "vendor", "area": "swabi"}
+    },
+    {
+      "id": "vendor-withdrawal-steps",
+      "input": "What happens after a vendor submits a withdrawal request?",
+      "expected": {
+        "relevant_chunk_ids": ["3b9cd5e35fca7726"]
+      },
+      "metadata": {"audience": "vendor", "area": "swabi"}
+    },
+    {
+      "id": "vendor-withdrawal-eligibility",
+      "input": "What is the minimum withdrawal and which wallet balance can a vendor withdraw?",
+      "expected": {
+        "relevant_chunk_ids": [
+          "dfc03cb4a7b33ef9",
+          "863d145f20890b30"
+        ]
+      },
+      "metadata": {"audience": "vendor", "area": "swabi"}
+    },
+    {
+      "id": "vendor-escrow-to-bank",
+      "input": "Does escrow pay directly to a vendor's bank, or does the vendor need to request a wallet withdrawal?",
+      "expected": {
+        "relevant_chunk_ids": [
+          "deedb842b9015315",
+          "00ff3e8b795c4478",
+          "3b9cd5e35fca7726"
+        ]
+      },
+      "metadata": {"audience": "vendor", "area": "swabi"}
+    },
+    {
+      "id": "vendor-payout-timing",
+      "input": "When are vendor funds released, and how long can a withdrawal take?",
+      "expected": {
+        "relevant_chunk_ids": [
+          "3b9cd5e35fca7726",
+          "deedb842b9015315",
+          "00ff3e8b795c4478"
+        ]
+      },
+      "metadata": {"audience": "vendor", "area": "swabi"}
+    },
+    {
+      "id": "booking-dispute",
+      "input": "What should I do if the vendor does not show up for my booking?",
+      "expected": {"relevant_chunk_ids": ["302c9611566d7d51"]},
+      "metadata": {"audience": "customer", "area": "swabi"}
+    },
+    {
+      "id": "vendor-verification",
+      "input": "What documents and steps are needed to become a verified vendor?",
+      "expected": {
+        "relevant_chunk_ids": [
+          "f1178020dd1e9572",
+          "00ff3e8b795c4478"
+        ]
+      },
+      "metadata": {"audience": "vendor", "area": "swabi"}
+    },
+    {
+      "id": "kashmir-travel",
+      "input": "What should travelers know before visiting Kashmir?",
+      "expected": {"relevant_chunk_ids": ["ab7901406a69317c"]},
+      "metadata": {"audience": "customer", "area": "travel"}
+    },
+    {
+      "id": "travel-safety",
+      "input": "What safety precautions should I follow during a trip?",
+      "expected": {"relevant_chunk_ids": ["a808f237a47036ef"]},
+      "metadata": {"audience": "customer", "area": "travel"}
+    }
+  ]
+}

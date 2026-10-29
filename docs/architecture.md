@@ -63,7 +63,7 @@ app/
 ├── api/routes/                 FastAPI routers
 │                               (health, metrics, chat_safety, enquiry)
 ├── swabi/                      Async client for NestJS APIs (no direct DB)
-├── rag/                        Retriever interface (Phase 2 will implement)
+├── rag/                        Ingestion, Qdrant storage, hybrid retrieval
 ├── graph/                      LangGraph foundation (minimal)
 └── evaluation/                 Dataset loader + runner
 

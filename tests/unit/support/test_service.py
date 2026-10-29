@@ -111,6 +111,7 @@ def test_empty_retrieval_returns_insufficient(
         retriever=retriever,
     )
     assert r.answer_type == AnswerType.INSUFFICIENT_CONTEXT
+    assert r.retrieval_mode_used == "hybrid"
     patch_gateway.generate_structured_sync.assert_not_called()
 
 
@@ -129,6 +130,8 @@ def test_answered_with_citation(retriever, patch_version_ok, patch_gateway):
     assert r.citations[0].chunk_id == "id1"
     assert r.knowledge_version == "abc123"
     assert r.provider == "groq"
+    assert r.retrieval_mode_used == "hybrid"
+    assert retriever.search.call_args.kwargs["index_version"] == "abc123"
 
 
 def test_answered_but_bad_citation_downgrades(

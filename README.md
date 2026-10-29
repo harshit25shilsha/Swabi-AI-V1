@@ -22,7 +22,7 @@ Swabi NestJS   = Business source of truth (auth, permissions, transactions)
 Python FastAPI = AI service
 Groq / Gemini  = Reasoning and generation
 LangGraph      = Orchestration (foundation only today)
-RAG            = Stable trusted knowledge (interface only today)
+RAG            = Stable trusted knowledge (hybrid BM25 + dense retrieval)
 Swabi APIs     = Live business data (via SwabiClient, not direct DB)
 ```
 
@@ -489,7 +489,26 @@ pytest -m integration -v
 # Lint and format.
 ruff check .
 ruff format --check .
+
+# Compare dense, BM25, and hybrid retrieval against the labeled query set.
+python scripts/evaluate_retrieval.py --k 5
+
+# Test different hybrid fusion settings; compare these metrics with defaults.
+python scripts/evaluate_retrieval.py --k 5 --rrf-rank-constant 20 --candidate-multiplier 2
 ```
+
+Retrieval evaluation requires the current knowledge index to be published
+and its Qdrant alias to be authoritative. The initial labeled set lives at
+[`app/evaluation/datasets/retrieval_v1.json`](app/evaluation/datasets/retrieval_v1.json);
+review and expand its relevance labels as the knowledge base evolves.
+Each query may label multiple relevant chunks when the answer spans
+several passages. The evaluator reports Precision@k, Recall@k, MRR@k,
+nDCG@k, and mean retrieval latency.
+BM25 indexes are cached by published index version, audience, area, and UTC
+date; each new filter scope incurs one initial corpus load, then reuses the
+in-memory index. Retrieval pins dense and BM25 searches to the verified
+published version. Use `--rrf-rank-constant` and `--candidate-multiplier`
+to evaluate settings without changing production defaults (60 and 4).
 
 Test layout:
 
@@ -515,7 +534,7 @@ app/
 ├── observability/              Counters, circuit breaker, request middleware
 ├── api/routes/                 health, metrics, chat_safety, enquiry
 ├── swabi/                      Async client for NestJS APIs
-├── rag/                        Retriever interface (Phase 2)
+├── rag/                        Ingestion, Qdrant storage, hybrid retrieval
 ├── graph/                      LangGraph foundation
 └── evaluation/                 Dataset loader + runner
 
@@ -543,6 +562,8 @@ docs/
 - Shared service-to-service authentication.
 - Request ID correlation, structured logging, safe logging helpers.
 - Redis connection manager.
+- RAG ingestion and hybrid retrieval over the published knowledge base
+  (BM25 keyword search + dense vector search with Reciprocal Rank Fusion).
 - Per-provider circuit breakers and fail-open on outage (Chat Safety).
 - Connection pooling for Groq calls.
 - Unit / integration / contract tests.
@@ -550,7 +571,6 @@ docs/
 ### Explicitly NOT included
 
 - Bid analyzer, semantic matching.
-- Full RAG (embeddings, vector DB, ingestion).
 - Autonomous agents, payments, wallet, escrow operations.
 - Docker / Kubernetes / cloud infrastructure.
 - Direct database access from Python.
@@ -587,3 +607,5 @@ same failure-policy questions.
   final report for the Chat Safety integration.
 - [`docs/phase_enquiry_report.md`](docs/phase_enquiry_report.md) —
   final report for the Enquiry Understanding phase.
+- [`docs/hybrid_retrieval.md`](docs/hybrid_retrieval.md) — how hybrid RAG
+  retrieval works, how it is evaluated, and how to run tuning experiments.

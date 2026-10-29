@@ -130,7 +130,39 @@ def test_fetch_success_marks_live_data_used(
         )
     assert r.live_data_used is True
     assert r.live_data_sources == ["GET /api/bookings/my"]
+    assert r.retrieval_mode_used == "not_applicable"
     assert r.answer_type == AnswerType.ANSWERED
+
+
+def test_wallet_balance_uses_live_data_without_rag(
+    retriever, patch_version_ok, patch_gateway
+):
+    with patch(
+        "app.capabilities.support.service.fetch_for_intent",
+        return_value=(
+            "GET /api/wallet/me/balance",
+            {
+                "coinBalance": 0,
+                "totalCoinsBalance": 1021,
+                "pendingCoins": 1021,
+                "lifetimeSavings": 0,
+                "creditBalance": 0,
+            },
+        ),
+    ):
+        response = ask(
+            SupportAskRequest(
+                question="check my wallet balance",
+                audience=Audience.CUSTOMER,
+            ),
+            retriever=retriever,
+            user_jwt="jwt-x",
+        )
+
+    assert response.live_data_used is True
+    assert response.live_data_sources == ["GET /api/wallet/me/balance"]
+    assert response.retrieval_mode_used == "not_applicable"
+    retriever.search.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

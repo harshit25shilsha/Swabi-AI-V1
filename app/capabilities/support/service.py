@@ -179,6 +179,7 @@ def _fallback(
     answer: str,
     answer_type: AnswerType,
     knowledge_version: str,
+    retrieval_mode_used: str = "not_applicable",
     live_data_used: bool = False,
     live_data_sources: list[str] | None = None,
 ) -> SupportAskResponse:
@@ -187,7 +188,7 @@ def _fallback(
         answer_type=answer_type,
         citations=[],
         confidence=0.0,
-        retrieval_mode_used="dense",
+        retrieval_mode_used=retrieval_mode_used,
         knowledge_version=knowledge_version,
         provider="",
         prompt_version=SUPPORT_PROMPT_VERSION,
@@ -401,6 +402,7 @@ def ask(
                 area=area_hint,
                 top_k=settings.rag_top_k,
                 min_score=settings.rag_min_score,
+                index_version=version.local_version,
             )
         except RetrieverError as exc:
             log.warning(
@@ -411,6 +413,7 @@ def ask(
                 answer=_INSUFFICIENT_MESSAGE,
                 answer_type=AnswerType.INSUFFICIENT_CONTEXT,
                 knowledge_version=version.local_version,
+                retrieval_mode_used="hybrid",
             )
         except Exception as exc:  # noqa: BLE001
             log.exception(
@@ -421,6 +424,7 @@ def ask(
                 answer=_INSUFFICIENT_MESSAGE,
                 answer_type=AnswerType.INSUFFICIENT_CONTEXT,
                 knowledge_version=version.local_version,
+                retrieval_mode_used="hybrid",
             )
 
         if not chunks:
@@ -432,6 +436,7 @@ def ask(
                 answer=_INSUFFICIENT_MESSAGE,
                 answer_type=AnswerType.INSUFFICIENT_CONTEXT,
                 knowledge_version=version.local_version,
+                retrieval_mode_used="hybrid",
             )
 
     # ------------------------------------------------------------------
@@ -456,6 +461,9 @@ def ask(
             answer=_INSUFFICIENT_MESSAGE,
             answer_type=AnswerType.INSUFFICIENT_CONTEXT,
             knowledge_version=version.local_version,
+            retrieval_mode_used=(
+                "not_applicable" if live_data_used else "hybrid"
+            ),
             live_data_used=live_data_used,
             live_data_sources=live_data_sources,
         )
@@ -490,6 +498,9 @@ def ask(
             answer=_LIVE_DATA_MESSAGE,
             answer_type=AnswerType.NEEDS_LIVE_DATA,
             knowledge_version=version.local_version,
+            retrieval_mode_used=(
+                "not_applicable" if live_data_used else "hybrid"
+            ),
         )
 
     if llm_out.answer_type == AnswerType.ANSWERED:
@@ -505,6 +516,9 @@ def ask(
                     answer=_INSUFFICIENT_MESSAGE,
                     answer_type=AnswerType.INSUFFICIENT_CONTEXT,
                     knowledge_version=version.local_version,
+                    retrieval_mode_used=(
+                        "not_applicable" if live_data_used else "hybrid"
+                    ),
                 )
         elif not live_data_used:
             log.warning(
@@ -515,6 +529,9 @@ def ask(
                 answer=_INSUFFICIENT_MESSAGE,
                 answer_type=AnswerType.INSUFFICIENT_CONTEXT,
                 knowledge_version=version.local_version,
+                retrieval_mode_used=(
+                    "not_applicable" if live_data_used else "hybrid"
+                ),
             )
 
     clean_answer, removed_paths = strip_forbidden_paths(llm_out.answer)
@@ -536,6 +553,9 @@ def ask(
             answer=_INSUFFICIENT_MESSAGE,
             answer_type=AnswerType.INSUFFICIENT_CONTEXT,
             knowledge_version=version.local_version,
+            retrieval_mode_used=(
+                "not_applicable" if live_data_used else "hybrid"
+            ),
             live_data_used=live_data_used,
             live_data_sources=live_data_sources,
         )
@@ -581,7 +601,7 @@ def ask(
         answer_type=llm_out.answer_type,
         citations=citations,
         confidence=confidence,
-        retrieval_mode_used="dense",
+        retrieval_mode_used="not_applicable" if live_data_used else "hybrid",
         knowledge_version=version.local_version,
         provider="groq",
         prompt_version=SUPPORT_PROMPT_VERSION,

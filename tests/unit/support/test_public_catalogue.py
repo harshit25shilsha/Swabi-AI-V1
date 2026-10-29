@@ -96,6 +96,7 @@ def test_package_search_no_jwt(
         )
     assert r.live_data_used is True
     assert r.live_data_sources == ["GET /api/packages"]
+    assert r.retrieval_mode_used == "not_applicable"
 
 
 def test_package_detail_no_jwt(

@@ -18,6 +18,7 @@ fastembed>=0.4.0
 numpy>=1.26.0
 qdrant-client>=1.12,<2.0
 langchain-qdrant>=0.2.0
+rank-bm25>=0.2.2
 
 
 pycryptodome>=3.20.0
