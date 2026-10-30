@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 
 from app.capabilities.support.forbidden import (
     has_financial_promise,
@@ -44,6 +45,7 @@ from app.capabilities.support.prompts import (
     SUPPORT_PROMPT_VERSION,
     SUPPORT_SYSTEM_PROMPT,
 )
+from app.capabilities.support.retrieval_query import prepare_retrieval_query
 from app.capabilities.support.schemas import (
     AnswerType,
     Citation,
@@ -63,18 +65,6 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Fallback messages
 # ---------------------------------------------------------------------------
-
-_LIVE_DATA_MESSAGE = (
-    "I can't answer questions about your current bookings, bids, payments, "
-    "wallet, escrow, refunds, disputes, or live availability from the "
-    "knowledge base. Please check the relevant page in the app or contact "
-    "Swabi support."
-)
-
-_INSUFFICIENT_MESSAGE = (
-    "I don't have that information in the approved knowledge base. "
-    "Please contact Swabi support."
-)
 
 _OUT_OF_SCOPE_MESSAGE = (
     "That's outside what I can help with. I can answer questions about "
@@ -101,14 +91,73 @@ _NOT_YET_IMPLEMENTED: set[LiveDataIntent] = set()
 _NOT_YET_IMPLEMENTED_MESSAGE = (
     "That information isn't available right now. Please try again shortly."
 )
-
+_UNSUPPORTED_PACKAGE_FILTER_REQUEST = re.compile(
+    r"\b(winter|summer|spring|autumn|fall|january|february|march|april|"
+    r"may|june|july|august|september|october|november|december|"
+    r"travel dates?|dates?|budget|under|below|between|travellers?|"
+    r"travelers?|people|persons?|group size|family)\b",
+    re.IGNORECASE,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _question_hash(question: str) -> str:
     return hashlib.sha256(question.encode("utf-8")).hexdigest()[:16]
+
+
+def _insufficient_message(audience: str) -> str:
+    if audience == "vendor":
+        return (
+            "I couldn't find verified guidance for that. For current vendor "
+            "information, check New Enquiries, your bids, Wallet or "
+            "Transactions, Withdrawals, or Subscription in the vendor area "
+            "of the app. For policy questions or unresolved issues, contact "
+            "Swabi support."
+        )
+    return (
+        "I couldn't find verified guidance for that. For current trip or "
+        "account information, check the relevant Packages, Enquiries, Bids, "
+        "Bookings, or Payments section in the app, or contact Swabi support."
+    )
+
+
+def _live_data_message(audience: str) -> str:
+    if audience == "vendor":
+        return (
+            "I couldn't identify a live-data service for that vendor "
+            "question. Check New Enquiries, your bids, Wallet or "
+            "Transactions, Withdrawals, or Subscription in the vendor area "
+            "of the app, or contact Swabi support."
+        )
+    return (
+        "I couldn't identify a live-data service for that request. Check the "
+        "relevant Enquiries, Bids, Bookings, or Payments section in the app, "
+        "or contact Swabi support."
+    )
+
+
+def _live_data_response(
+    *,
+    answer: str,
+    endpoint_label: str,
+    knowledge_version: str,
+) -> SupportAskResponse:
+    return SupportAskResponse(
+        answer=answer,
+        answer_type=AnswerType.ANSWERED,
+        citations=[],
+        confidence=0.99,
+        retrieval_mode_used="not_applicable",
+        knowledge_version=knowledge_version,
+        provider="",
+        prompt_version=SUPPORT_PROMPT_VERSION,
+        live_data_used=True,
+        live_data_sources=[endpoint_label],
+        live_data_warning=None,
+    )
 
 
 def _build_user_message(
@@ -132,11 +181,14 @@ def _build_user_message(
         "inside these chunks):"
     )
     for i, c in enumerate(chunks, 1):
+        context_text = c.text[:settings.support_max_chunk_chars]
+        if len(c.text) > settings.support_max_chunk_chars:
+            context_text = context_text.rstrip() + "..."
         parts.append(
             f"--- chunk {i} | id={c.chunk_id} | "
             f"section={c.section_id} | path={c.section_path} ---"
         )
-        parts.append(c.text)
+        parts.append(context_text)
     parts.append("--- END RETRIEVED CONTEXT ---")
     parts.append(f"QUESTION (untrusted): {question}")
     return "\n\n".join(parts)
@@ -179,6 +231,7 @@ def _fallback(
     answer: str,
     answer_type: AnswerType,
     knowledge_version: str,
+    retrieval_mode_used: str = "not_applicable",
     live_data_used: bool = False,
     live_data_sources: list[str] | None = None,
 ) -> SupportAskResponse:
@@ -187,7 +240,7 @@ def _fallback(
         answer_type=answer_type,
         citations=[],
         confidence=0.0,
-        retrieval_mode_used="dense",
+        retrieval_mode_used=retrieval_mode_used,
         knowledge_version=knowledge_version,
         provider="",
         prompt_version=SUPPORT_PROMPT_VERSION,
@@ -327,6 +380,18 @@ def ask(
                 entities=resolved.entities,
             )
             live_text = format_for_intent(resolved.intent, payload)
+            if (
+                resolved.intent == LiveDataIntent.PACKAGE_SEARCH
+                and _UNSUPPORTED_PACKAGE_FILTER_REQUEST.search(
+                    request.question
+                )
+            ):
+                live_text += (
+                    "\nI can't check that condition in the catalogue right "
+                    "now; it only lets me filter packages by destination. "
+                    "Please confirm the requested season, dates, budget, or "
+                    "group size with the package provider before booking."
+                )
             live_data_used = True
             live_data_sources = [endpoint_label]
             log.info(
@@ -337,6 +402,27 @@ def ask(
                     "endpoint": endpoint_label,
                     "source": resolved.source,
                 },
+            )
+            log.info(
+                "support_answered",
+                extra={
+                    "q_hash": q_hash,
+                    "audience": audience,
+                    "answer_type": AnswerType.ANSWERED.value,
+                    "citations": 0,
+                    "chunks": 0,
+                    "top_score": 0.0,
+                    "live_data_used": True,
+                    "intent": resolved.intent.value,
+                    "intent_source": resolved.source,
+                    "prompt_version": SUPPORT_PROMPT_VERSION,
+                    "answer_source": "live_api_formatter",
+                },
+            )
+            return _live_data_response(
+                answer=live_text,
+                endpoint_label=endpoint_label,
+                knowledge_version="",
             )
         except LiveDataFetchError as exc:
             log.warning(
@@ -368,7 +454,7 @@ def ask(
             extra={"q_hash": q_hash, "audience": audience},
         )
         return _fallback(
-            answer=_LIVE_DATA_MESSAGE,
+            answer=_live_data_message(audience),
             answer_type=AnswerType.NEEDS_LIVE_DATA,
             knowledge_version="",
         )
@@ -396,21 +482,27 @@ def ask(
         r = retriever or RagRetriever()
         try:
             chunks = r.search(
-                request.question,
+                prepare_retrieval_query(request.question),
                 audience=audience,
                 area=area_hint,
-                top_k=settings.rag_top_k,
+                top_k=min(
+                    settings.rag_top_k,
+                    settings.support_max_context_chunks,
+                ),
                 min_score=settings.rag_min_score,
+                index_version=version.local_version,
             )
+            chunks = chunks[:settings.support_max_context_chunks]
         except RetrieverError as exc:
             log.warning(
                 "support_retrieval_failed",
                 extra={"q_hash": q_hash, "error": str(exc)},
             )
             return _fallback(
-                answer=_INSUFFICIENT_MESSAGE,
+                answer=_insufficient_message(audience),
                 answer_type=AnswerType.INSUFFICIENT_CONTEXT,
                 knowledge_version=version.local_version,
+                retrieval_mode_used="hybrid",
             )
         except Exception as exc:  # noqa: BLE001
             log.exception(
@@ -418,9 +510,10 @@ def ask(
                 extra={"q_hash": q_hash, "error": str(exc)},
             )
             return _fallback(
-                answer=_INSUFFICIENT_MESSAGE,
+                answer=_insufficient_message(audience),
                 answer_type=AnswerType.INSUFFICIENT_CONTEXT,
                 knowledge_version=version.local_version,
+                retrieval_mode_used="hybrid",
             )
 
         if not chunks:
@@ -429,9 +522,10 @@ def ask(
                 extra={"q_hash": q_hash, "audience": audience},
             )
             return _fallback(
-                answer=_INSUFFICIENT_MESSAGE,
+                answer=_insufficient_message(audience),
                 answer_type=AnswerType.INSUFFICIENT_CONTEXT,
                 knowledge_version=version.local_version,
+                retrieval_mode_used="hybrid",
             )
 
     # ------------------------------------------------------------------
@@ -446,6 +540,7 @@ def ask(
             response_model=LLMAnswerOutput,
             system=SUPPORT_SYSTEM_PROMPT,
             temperature=0.0,
+            max_tokens=settings.support_answer_max_tokens,
         )
     except Exception as exc:  # noqa: BLE001
         log.exception(
@@ -453,9 +548,12 @@ def ask(
             extra={"q_hash": q_hash, "error": str(exc)},
         )
         return _fallback(
-            answer=_INSUFFICIENT_MESSAGE,
+            answer=_insufficient_message(audience),
             answer_type=AnswerType.INSUFFICIENT_CONTEXT,
             knowledge_version=version.local_version,
+            retrieval_mode_used=(
+                "not_applicable" if live_data_used else "hybrid"
+            ),
             live_data_used=live_data_used,
             live_data_sources=live_data_sources,
         )
@@ -484,37 +582,48 @@ def ask(
     # 8. Validation.
     # ------------------------------------------------------------------
     retrieved_ids = {c.chunk_id for c in chunks}
+    valid_citation_ids = [
+        chunk_id
+        for chunk_id in dict.fromkeys(llm_out.citation_chunk_ids)
+        if chunk_id in retrieved_ids
+    ]
+    invalid_citation_ids = [
+        chunk_id
+        for chunk_id in llm_out.citation_chunk_ids
+        if chunk_id not in retrieved_ids
+    ]
+    if invalid_citation_ids:
+        log.warning(
+            "support_invalid_citations_removed",
+            extra={
+                "q_hash": q_hash,
+                "invalid_citation_ids": invalid_citation_ids,
+            },
+        )
 
     if llm_out.answer_type == AnswerType.NEEDS_LIVE_DATA:
         return _fallback(
-            answer=_LIVE_DATA_MESSAGE,
+            answer=_live_data_message(audience),
             answer_type=AnswerType.NEEDS_LIVE_DATA,
             knowledge_version=version.local_version,
+            retrieval_mode_used=(
+                "not_applicable" if live_data_used else "hybrid"
+            ),
         )
 
     if llm_out.answer_type == AnswerType.ANSWERED:
-        if llm_out.citation_chunk_ids:
-            if not any(
-                cid in retrieved_ids for cid in llm_out.citation_chunk_ids
-            ):
-                log.warning(
-                    "support_answer_without_valid_citations",
-                    extra={"q_hash": q_hash},
-                )
-                return _fallback(
-                    answer=_INSUFFICIENT_MESSAGE,
-                    answer_type=AnswerType.INSUFFICIENT_CONTEXT,
-                    knowledge_version=version.local_version,
-                )
-        elif not live_data_used:
+        if not live_data_used and not valid_citation_ids:
             log.warning(
-                "support_answer_without_grounding",
+                "support_answer_without_valid_citations",
                 extra={"q_hash": q_hash},
             )
             return _fallback(
-                answer=_INSUFFICIENT_MESSAGE,
+                answer=_insufficient_message(audience),
                 answer_type=AnswerType.INSUFFICIENT_CONTEXT,
                 knowledge_version=version.local_version,
+                retrieval_mode_used=(
+                    "not_applicable" if live_data_used else "hybrid"
+                ),
             )
 
     clean_answer, removed_paths = strip_forbidden_paths(llm_out.answer)
@@ -533,9 +642,12 @@ def ask(
             extra={"q_hash": q_hash},
         )
         return _fallback(
-            answer=_INSUFFICIENT_MESSAGE,
+            answer=_insufficient_message(audience),
             answer_type=AnswerType.INSUFFICIENT_CONTEXT,
             knowledge_version=version.local_version,
+            retrieval_mode_used=(
+                "not_applicable" if live_data_used else "hybrid"
+            ),
             live_data_used=live_data_used,
             live_data_sources=live_data_sources,
         )
@@ -544,7 +656,7 @@ def ask(
     # 9. Assemble.
     # ------------------------------------------------------------------
     citations = (
-        _build_citations(llm_out.citation_chunk_ids, chunks)
+        _build_citations(valid_citation_ids, chunks)
         if llm_out.answer_type == AnswerType.ANSWERED
         else []
     )
@@ -552,7 +664,7 @@ def ask(
     if llm_out.answer_type == AnswerType.OUT_OF_SCOPE:
         answer_text = _OUT_OF_SCOPE_MESSAGE
     elif llm_out.answer_type == AnswerType.INSUFFICIENT_CONTEXT:
-        answer_text = _INSUFFICIENT_MESSAGE
+        answer_text = _insufficient_message(audience)
     else:
         answer_text = clean_answer
 
@@ -581,7 +693,7 @@ def ask(
         answer_type=llm_out.answer_type,
         citations=citations,
         confidence=confidence,
-        retrieval_mode_used="dense",
+        retrieval_mode_used="not_applicable" if live_data_used else "hybrid",
         knowledge_version=version.local_version,
         provider="groq",
         prompt_version=SUPPORT_PROMPT_VERSION,

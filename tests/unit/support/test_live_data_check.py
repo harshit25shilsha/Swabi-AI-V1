@@ -23,6 +23,10 @@ def test_live_data_questions_flagged(q):
 @pytest.mark.parametrize("q", [
     "What is the cancellation policy?",
     "How does escrow work?",
+    "I paid for a trip but need to cancel. How is my refund decided?",
+    "What happens after a vendor submits a withdrawal request?",
+    "What should I do if the vendor does not show up for my booking?",
+    "How do I cancel my booking?",
     "What activities are good for families in Kashmir?",
     "Tell me about Swabi Plus",
     "What is the vendor commission?",

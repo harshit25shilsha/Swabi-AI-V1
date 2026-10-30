@@ -68,3 +68,13 @@ def test_llm_output_shape():
         confidence=0.9,
     )
     assert out.answer_type == AnswerType.ANSWERED
+
+
+def test_llm_output_limits_citations_to_three():
+    with pytest.raises(ValidationError):
+        LLMAnswerOutput(
+            answer_type=AnswerType.ANSWERED,
+            answer="text",
+            citation_chunk_ids=["c1", "c2", "c3", "c4"],
+            confidence=0.9,
+        )

@@ -53,6 +53,83 @@ def test_my_bookings_capped_at_5():
     assert "of 20" in text
 
 
+def test_package_search_hides_negative_duration():
+    text = format_for_intent(
+        LiveDataIntent.PACKAGE_SEARCH,
+        {
+            "packages": [{
+                "packageCode": "PKG-920",
+                "title": "Italy",
+                "destination": "Italy",
+                "duration": "-15 Days",
+                "numberOfDays": -15,
+                "price": 599,
+            }],
+            "total": 1,
+        },
+    )
+
+    assert "duration unavailable" in text
+    assert "-15 Days" not in text
+
+
+def test_package_search_uses_conversational_chat_format():
+    text = format_for_intent(
+        LiveDataIntent.PACKAGE_SEARCH,
+        {
+            "packages": [
+                {
+                    "packageCode": "PKG-922",
+                    "title": "Rishikesh Tours",
+                    "destination": "India",
+                    "numberOfDays": 2,
+                    "price": 2000,
+                    "currency": "INR",
+                    "agent": {"companyName": "Karan Tours"},
+                },
+                {
+                    "packageCode": "PKG-921",
+                    "title": "Uttar Pradesh Tour",
+                    "destination": "India",
+                    "duration": "2 Days",
+                    "price": 4000,
+                    "currency": "INR",
+                    "agent": {"companyName": "Navneet Tours"},
+                },
+            ],
+            "total": 13,
+        },
+    )
+
+    assert "I found 13 packages in the catalogue" in text
+    assert "Here are 2 to get you started" in text
+    assert "**Rishikesh Tours** (PKG-922) - India, 2 days, INR 2,000.00" in text
+    assert "offered by Karan Tours" in text
+    assert "Would you like details about any of these packages?" in text
+    assert "PUBLIC PACKAGES" not in text
+    assert " | " not in text
+
+
+def test_package_search_uses_valid_day_count_over_bad_duration_label():
+    text = format_for_intent(
+        LiveDataIntent.PACKAGE_SEARCH,
+        {
+            "packages": [{
+                "packageCode": "PKG-920",
+                "title": "Italy",
+                "destination": "Italy",
+                "duration": "-15 Days",
+                "numberOfDays": 15,
+                "price": 599,
+            }],
+            "total": 1,
+        },
+    )
+
+    assert "15 days" in text
+    assert "-15 Days" not in text
+
+
 def test_my_coins_shows_all_fields():
     text = format_for_intent(LiveDataIntent.MY_COINS, {
         "coinBalance": 100, "totalCoinsBalance": 250,

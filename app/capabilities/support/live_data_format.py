@@ -1,4 +1,4 @@
-"""Format live-data payloads into compact text for the LLM.
+"""Format allowlisted live-data fields into concise user-facing text.
 
 Hard rules:
   * At most 5 items per list. Never the full set.
@@ -8,6 +8,7 @@ Hard rules:
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any
 
@@ -55,6 +56,21 @@ def _money(amount: Any, currency: str | None = None) -> str:
     if currency:
         return f"{sign}{str(currency).strip().upper()} {numeric}"
     return f"{sign}{numeric}"
+
+
+def _package_duration(package: dict[str, Any]) -> str:
+    days = package.get("numberOfDays")
+    if isinstance(days, (int, float)) and not isinstance(days, bool):
+        if days > 0 and float(days).is_integer():
+            return f"{int(days)} Days"
+        return "Duration unavailable"
+
+    duration = package.get("duration")
+    if not isinstance(duration, str) or not duration.strip():
+        return "Duration unavailable"
+    if re.search(r"(?<!\w)-\s*\d+(?:\.\d+)?\s*days?\b", duration, re.I):
+        return "Duration unavailable"
+    return _s(duration)
 
 
 # Per-intent formatters
@@ -381,23 +397,64 @@ def _fmt_package_search(payload: dict[str, Any]) -> str:
     packages = payload.get("packages", [])[:_MAX_ITEMS]
     total = payload.get("total", len(packages))
     if not packages:
-        return "No packages match that search right now."
-    lines = [f"PUBLIC PACKAGES (showing {len(packages)} of {total}):"]
+        return (
+            "I couldn't find any packages in the catalogue for that search. "
+            "Try another destination or ask me to show all packages."
+        )
+
+    shown = len(packages)
+    if total > shown:
+        intro = (
+            f"I found {total} packages in the catalogue. "
+            f"Here are {shown} to get you started:"
+        )
+    elif total == 1:
+        intro = "I found one package in the catalogue:"
+    else:
+        intro = f"I found {shown} packages in the catalogue:"
+
+    lines = [intro]
     for p in packages:
         agent = p.get("agent") or {}
-        lines.append(
-            f"- {_s(p.get('packageCode'))} | \"{_s(p.get('title'))}\" | "
-            f"{_s(p.get('destination'))} | "
-            f"{_s(p.get('duration'))} | "
-            f"{_money(p.get('price'), p.get('currency') or 'INR')} | "
-            f"by {_s(agent.get('companyName'))}"
-        )
+        title = p.get("title")
+        code = p.get("packageCode")
+        summary = f"- **{_s(title)}**"
+        if code:
+            summary += f" ({_s(code)})"
+
+        details = []
+        if p.get("destination"):
+            details.append(str(p["destination"]).strip())
+        duration = _package_duration(p)
+        if duration != "Duration unavailable":
+            details.append(duration.lower())
+        else:
+            details.append("duration unavailable")
+        if p.get("price") is not None:
+            details.append(
+                _money(p.get("price"), p.get("currency") or "INR")
+            )
+        if agent.get("companyName"):
+            details.append(f"offered by {_s(agent['companyName'])}")
+        if details:
+            summary += " - " + ", ".join(details)
+        else:
+            summary += "."
+        lines.append(summary)
+
+    lines.append("Would you like details about any of these packages?")
     return "\n".join(lines)
 
 
 def _fmt_package_detail(payload: dict[str, Any]) -> str:
     p = payload.get("package") or {}
     if not p:
+        not_found_code = payload.get("not_found_code")
+        if not_found_code:
+            return (
+                f"No package with code {_s(not_found_code)} was found "
+                "in the public catalogue."
+            )
         return "The package endpoint returned no details."
     agent = p.get("agent") or {}
     inclusions = p.get("inclusions") or []
@@ -408,8 +465,7 @@ def _fmt_package_detail(payload: dict[str, Any]) -> str:
         f"- Code: {_s(p.get('packageCode'))}",
         f"- Title: {_s(p.get('title'))}",
         f"- Destination: {_s(p.get('destination'))}",
-        f"- Duration: {_s(p.get('duration'))} "
-        f"({_s(p.get('numberOfDays'), 5)} days)",
+        f"- Duration: {_package_duration(p)}",
         f"- Price: {_money(p.get('price'), p.get('currency') or 'INR')} "
         f"(base {_money(p.get('basePrice'), p.get('currency') or 'INR')}, "
         f"savings {_s(p.get('savingsPercent'), 5)}%)",

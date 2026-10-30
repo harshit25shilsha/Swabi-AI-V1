@@ -35,7 +35,13 @@ class SupportAskResponse(BaseModel):
     answer_type: AnswerType
     citations: list[Citation] = Field(default_factory=list)
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
-    retrieval_mode_used: str = "dense"
+    retrieval_mode_used: str = Field(
+        default="not_applicable",
+        description=(
+            "Knowledge retrieval mode, or not_applicable when no knowledge "
+            "retrieval ran."
+        ),
+    )
     knowledge_version: str = ""
     request_id: str = ""
     provider: str = ""
@@ -54,5 +60,5 @@ class LLMAnswerOutput(BaseModel):
     """
     answer_type: AnswerType
     answer: str
-    citation_chunk_ids: list[str] = Field(default_factory=list)
+    citation_chunk_ids: list[str] = Field(default_factory=list, max_length=3)
     confidence: float | None = None
