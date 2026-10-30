@@ -381,6 +381,67 @@ def test_fetch_for_intent_dispatch(monkeypatch):
     assert payload["total"] == 0
 
 
+def test_fetch_package_detail_by_code(monkeypatch):
+    record: list = []
+    package = {
+        "packageCode": "PKG-922",
+        "title": "Rishikesh Tours",
+    }
+    _mock_httpx(
+        monkeypatch,
+        body={
+            "success": True,
+            "data": {"packages": [package], "total": 1},
+        },
+        record=record,
+    )
+
+    label, payload = live_data.fetch_for_intent(
+        LiveDataIntent.PACKAGE_DETAIL,
+        user_jwt=None,
+        entities={"package_code": "PKG-922"},
+    )
+
+    assert label == "GET /api/packages (lookup by package code)"
+    assert payload == {"package": package}
+    assert record[0]["url"].endswith("/packages")
+    assert record[0]["params"] == {"page": 1, "limit": 100}
+    assert "Authorization" not in record[0]["headers"]
+
+
+def test_fetch_package_detail_by_code_searches_later_pages(monkeypatch):
+    requests: list[dict] = []
+    pages = {
+        1: {"packages": [{"packageCode": "PKG-921"}], "total": 2},
+        2: {"packages": [{"packageCode": "PKG-922"}], "total": 2},
+    }
+
+    def fake_get(path, *, user_jwt, params=None):
+        requests.append({"path": path, "params": params})
+        return {"data": pages[params["page"]]}
+
+    monkeypatch.setattr(live_data, "_get", fake_get)
+
+    payload = live_data.fetch_package_by_code(None, "PKG-922")
+
+    assert payload["package"]["packageCode"] == "PKG-922"
+    assert [request["params"]["page"] for request in requests] == [1, 2]
+
+
+def test_fetch_package_detail_by_code_reports_missing_package(monkeypatch):
+    _mock_httpx(
+        monkeypatch,
+        body={
+            "success": True,
+            "data": {"packages": [], "total": 0},
+        },
+    )
+
+    payload = live_data.fetch_package_by_code(None, "PKG-922")
+
+    assert payload == {"package": {}, "not_found_code": "PKG-922"}
+
+
 def test_fetch_for_payment_history_omits_unspecified_status(monkeypatch):
     record: list = []
     _mock_httpx(

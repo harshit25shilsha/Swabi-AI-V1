@@ -138,7 +138,7 @@ def test_checked_in_retrieval_dataset_loads():
 
     dataset = _load_dataset(DEFAULT_DATASET)
 
-    assert len(dataset.cases) == 14
+    assert len(dataset.cases) == 15
     assert all(case.relevant_chunk_ids for case in dataset.cases)
     cases = {case.id: case for case in dataset.cases}
     assert set(cases["vendor-payouts"].relevant_chunk_ids) == {
@@ -149,15 +149,31 @@ def test_checked_in_retrieval_dataset_loads():
         "863d145f20890b30",
     }
     assert cases["vendor-withdrawal-steps"].relevant_chunk_ids == ["3b9cd5e35fca7726"]
+    assert cases["package-booking-through-enquiry"].relevant_chunk_ids == [
+        "47c29ba71be7e11c",
+        "c3a5eb066f5f711e",
+    ]
 
 
 def test_evaluation_cli_exposes_tuning_options():
     from scripts.evaluate_retrieval import _args
 
-    args = _args(["--rrf-rank-constant", "20", "--candidate-multiplier", "2"])
+    args = _args(
+        [
+            "--rrf-rank-constant",
+            "20",
+            "--candidate-multiplier",
+            "2",
+            "--reranker-model",
+            "local/test-model",
+            "--include-reranked",
+        ]
+    )
 
     assert args.rrf_rank_constant == 20
     assert args.candidate_multiplier == 2
+    assert args.reranker_model == "local/test-model"
+    assert args.include_reranked is True
 
 
 def test_searchers_apply_tuning_only_to_hybrid_search():
@@ -167,6 +183,7 @@ def test_searchers_apply_tuning_only_to_hybrid_search():
     embedder.embed_queries.return_value = np.ones((1, 2), dtype="float32")
     store = MagicMock()
     hybrid = MagicMock()
+    reranked = MagicMock()
     case = RetrievalEvalCase(
         id="case",
         query="withdraw payout",
@@ -178,16 +195,23 @@ def test_searchers_apply_tuning_only_to_hybrid_search():
     with (
         patch("scripts.evaluate_retrieval.EmbeddingModel", return_value=embedder),
         patch("scripts.evaluate_retrieval.QdrantStore", return_value=store),
-        patch("scripts.evaluate_retrieval.RagRetriever", return_value=hybrid),
+        patch(
+            "scripts.evaluate_retrieval.RagRetriever",
+            side_effect=[hybrid, reranked],
+        ),
+        patch("scripts.evaluate_retrieval.CrossEncoderReranker") as reranker,
     ):
         searchers = _searchers(
             "version-1",
             rrf_rank_constant=20,
             candidate_multiplier=2,
+            reranker_model="local/test-model",
+            include_reranked=True,
         )
         searchers["dense"](case, 5)
         searchers["bm25"](case, 5)
         searchers["hybrid"](case, 5)
+        searchers["hybrid_reranked"](case, 5)
 
     assert store.search.call_args.kwargs["index_version"] == "version-1"
     assert "rrf_rank_constant" not in store.search.call_args.kwargs
@@ -195,3 +219,32 @@ def test_searchers_apply_tuning_only_to_hybrid_search():
     assert store.keyword_search.call_args.kwargs["index_version"] == "version-1"
     assert hybrid.search.call_args.kwargs["rrf_rank_constant"] == 20
     assert hybrid.search.call_args.kwargs["candidate_multiplier"] == 2
+    assert reranker.call_args.args == ("local/test-model",)
+    assert reranked.search.call_args.kwargs["index_version"] == "version-1"
+    assert reranked.search.call_args.kwargs["rrf_rank_constant"] == 20
+
+
+def test_retrieval_report_reports_reranking_deltas():
+    dataset = RetrievalEvalDataset(
+        name="test",
+        cases=[
+            RetrievalEvalCase(
+                id="case",
+                query="query",
+                relevant_chunk_ids=["match"],
+            )
+        ],
+    )
+    report = evaluate_retrieval(
+        dataset,
+        {
+            "hybrid": lambda case, k: [_chunk("miss")],
+            "hybrid_reranked": lambda case, k: [_chunk("match")],
+        },
+        k=1,
+    )
+
+    comparison = report.to_dict()["comparisons"]["hybrid_reranked_vs_hybrid"]
+
+    assert comparison["mrr_at_k"] == 1.0
+    assert comparison["ndcg_at_k"] == 1.0

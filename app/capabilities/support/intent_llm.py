@@ -63,7 +63,8 @@ CUSTOMER INTENTS (only meaningful when audience is "customer"):
 
 PUBLIC CATALOGUE INTENTS (no authentication required, any audience):
 - package_search: browse the public package catalogue.
-  Extract "destination" when the user names a place (e.g. "Goa", "Kashmir").
+  Extract "query" as the destination/place only (e.g. "Goa", "Kashmir");
+  do not include a season, date, budget, or traveler count in this field.
 - package_detail: details of one specific package.
   Extract its UUID as "package_id" only when the UUID is explicitly in the question.
 - activity_search: browse public activities.
@@ -102,8 +103,9 @@ ENTITY RULES:
 - For enquiry bids, use {"enquiry_id": "<UUID>"} only when a UUID is present.
 - For list filters, use {"status": "<supported status>"} only when the user
   asks for that status.
-- For package_search, use {"query": "<search phrase>"}; use an empty string
-  for an unfiltered catalogue request.
+- For package_search, use {"query": "<destination/place>"}; use an empty string for an unfiltered
+catalogue request. The package API currently only supports destination
+filtering; never claim other requested filters were applied.
 - Do not put a whole sentence or the user's question into an entity value.
 
 Examples:
@@ -142,6 +144,10 @@ Output: {"intent":"package_search","entities":{"query":""},"confidence":0.90}
 
 Audience: customer
 Question: "Show me packages in Goa"
+Output: {"intent":"package_search","entities":{"query":"Goa"},"confidence":0.94}
+
+Audience: customer
+Question: "Show me winter packages in Goa"
 Output: {"intent":"package_search","entities":{"query":"Goa"},"confidence":0.94}
 
 Audience: customer

@@ -1,7 +1,7 @@
 # Swabi AI Service — Architecture
 
-**Status:** Post Chat Safety integration + post-integration hardening +
-Phase 1 (Enquiry Understanding)
+**Status:** Chat Safety + Phase 1 (Enquiry Understanding) + Phase 2 AI
+Support implementation; Phase 2 acceptance is in progress
 **Last updated:** October 2026
 **Audience:** Engineers working on the Swabi AI service or integrating a
 new AI capability.
@@ -22,16 +22,15 @@ never called directly by a browser for authenticated actions, and it
 never talks to the Swabi PostgreSQL database.
 
 ```
-Frontend  ──▶  NestJS  ──▶  AI Service  ──▶  LLM providers
-                  │             │
-                  │             └──▶  NestJS APIs (for live data)
-                  │
-                  └──▶  PostgreSQL / Redis / business services
+Frontend ──▶ NestJS ──▶ AI Service ──▶ Groq / Gemini
+               │             ├──▶ Qdrant (approved knowledge)
+               │             └──▶ NestJS APIs (user-authorized live reads)
+               └──▶ PostgreSQL / Redis / business services
 ```
 
 **Rule:** NestJS is the source of truth for business state and
-authorization. The AI service provides understanding, reasoning,
-retrieval, and recommendation.
+authorization. The AI service provides moderation, extraction, support
+retrieval, and answer generation; it does not perform business writes.
 
 ---
 
@@ -59,13 +58,19 @@ app/
 │       ├── schemas.py          Extraction + request/response
 │       ├── prompts.py          Extraction prompt + version hash
 │       └── service.py          Extraction + missing-field detection
+│   └── support/                Audience-aware RAG and live Swabi data
+│       ├── intent_resolver.py  Deterministic + LLM intent routing
+│       ├── live_data.py        Allowlisted NestJS reads, auth, decryption
+│       ├── live_data_format.py Safe, user-facing data formatting
+│       ├── retrieval_query.py  Canonical retrieval query preparation
+│       └── service.py          RAG/live orchestration and response checks
 ├── observability/              Counters, circuit breaker, request middleware
 ├── api/routes/                 FastAPI routers
-│                               (health, metrics, chat_safety, enquiry)
-├── swabi/                      Async client for NestJS APIs (no direct DB)
-├── rag/                        Ingestion, Qdrant storage, hybrid retrieval
+│                               (health, metrics, chat_safety, enquiry, support)
+├── swabi/                      NestJS transport and encrypted-response helpers
+├── rag/                        Lifecycle-aware ingestion, Qdrant, hybrid RAG
 ├── graph/                      LangGraph foundation (minimal)
-└── evaluation/                 Dataset loader + runner
+└── evaluation/                 Retrieval and grounding evaluation
 
 tests/
 ├── unit/                       Pure logic, mocks, no external calls
@@ -91,6 +96,7 @@ docs/
 | `GET` | `/metrics` | none | Prometheus text. Counters + circuit state. |
 | `POST` | `/api/v1/validate-message` | service token | Chat Safety classification. |
 | `POST` | `/api/v1/enquiry/understand` | service token | Enquiry Understanding extraction. |
+| `POST` | `/api/v1/support/ask` | user bearer token | Knowledge-grounded support and live Swabi reads. |
 
 Public/unauthenticated routes must sit behind a reverse proxy that
 restricts inbound access. This is documented and expected.
@@ -152,20 +158,26 @@ this value. Do not rename it unilaterally.
 
 ### 5.2 Outbound — user JWT forwarding
 
-User-facing AI routes (added in later phases) accept the logged-in
-user's JWT and forward it unchanged to NestJS when calling
-`SwabiClient`. NestJS authorizes against the user's real identity.
+`POST /api/v1/support/ask` requires a user bearer token. The route extracts
+it and passes it explicitly to the support service. Private live-data
+fetchers forward it unchanged to NestJS; NestJS authorizes against the user's
+real identity. Public catalogue intents may call their endpoints without a
+JWT.
 
-`SwabiClient._headers()` prefers the caller's JWT if present, falling
-back to a service API key for internal calls.
+The support integration currently uses its own `httpx` transport in
+`app/capabilities/support/live_data.py`, including response-envelope
+unwrapping and optional encrypted-payload decryption. Do not describe this
+path as using `SwabiClient` until it is actually consolidated there.
 
 ### 5.3 The boundary
 
 `auth_context_middleware` only captures the user JWT for routes
 under `USER_JWT_ROUTE_PREFIXES`. Service-to-service routes — including
 `/api/v1/validate-message` and `/api/v1/enquiry/understand` — are
-excluded and explicitly clear the context. This prevents a service
-token from leaking into `SwabiClient` as if it were a user JWT.
+excluded and explicitly clear the context. The support route currently
+validates its own bearer header and passes the token explicitly; it does not
+rely on the auth-context allow-list. This prevents a service token from
+being treated as a user JWT.
 
 Do not add a route to the allow-list unless it genuinely acts on behalf
 of a logged-in user. The default is "no capture".
@@ -184,16 +196,20 @@ LLMGateway
     └── generate_structured_sync()   (sync, Pydantic-validated JSON)
 ```
 
-`GroqProvider` implements bounded retries, timeouts, and normalized
-errors. `generate_structured()` / `generate_structured_sync()` ask the
-model for JSON, validate against a Pydantic schema, and retry once on
-failure.
+`GroqProvider` implements bounded retries, timeouts, token pacing, and
+normalized errors. `generate_structured()` / `generate_structured_sync()`
+ask the model for JSON and validate it against a Pydantic schema. If the
+provider marks a response as completion-truncated, the gateway retries once
+with a larger completion budget (up to 4,096 tokens); other validation
+failures use the normal single retry.
 
-Both current capabilities use the **sync** path because their service
-chains are synchronous:
+Current capability call paths:
 
 - Chat Safety uses `generate_sync()` through `chat_safety/llm_adapter.py`.
 - Enquiry Understanding uses `generate_structured_sync()` directly.
+- RAG support uses structured synchronous generation for knowledge answers.
+  Successful live API answers are formatted deterministically and do not call
+  the LLM.
 
 New capabilities should prefer the async interface if they can be async
 end-to-end. The sync path exists because rewriting both capabilities to
@@ -228,9 +244,9 @@ with `max_keepalive_connections=20`, `max_connections=50`, and
 closed on FastAPI shutdown (and again via `atexit` as a safety net).
 
 The async `generate()` path still constructs a fresh `AsyncClient` per
-attempt and therefore does not pool. This is intentional while both
-capabilities use the sync path. The async refactor should add a shared
-`AsyncClient` — see §13.
+attempt and therefore does not pool. The sync path is used by current
+capability orchestration; add a shared `AsyncClient` if an end-to-end async
+capability makes pooling necessary.
 
 ### Retry policy
 
@@ -244,8 +260,10 @@ honored even though the client has its own default.
 
 `openai/gpt-oss-120b` is a reasoning model: it spends completion tokens
 on internal reasoning *before* emitting the JSON payload. `LLM_MAX_TOKENS`
-must leave room for both phases. 128 was tried and rejected the request
-with `json_validate_failed` and empty output. 512 is the current floor.
+must leave room for both phases. General `LLM_MAX_TOKENS` defaults to 512;
+RAG answers use `SUPPORT_ANSWER_MAX_TOKENS` (1,536 by default). The gateway
+observes the provider `finish_reason` and increases the budget on a
+truncation retry.
 
 Both `generate()` and `generate_sync()` retry once without
 `response_format={"type":"json_object"}` when Groq returns 400 with
@@ -325,12 +343,18 @@ except when the provider ladder itself retries). This is deliberate: see
 integration plan §5.2. Raising it requires evaluation evidence.
 
 `LLM_MAX_TOKENS` defaults to `512`. Do not reduce it below ~256 for
-reasoning models; see §6.
+reasoning models; RAG answers have a separate `SUPPORT_ANSWER_MAX_TOKENS`
+budget.
 
-Both current capabilities reuse the same settings. There are no
-capability-specific environment variables today. If a future capability
-needs one, prefer a lower-case Pydantic field with a sane default over
-a new required variable.
+AI Support settings:
+
+| Variable | Default | Purpose |
+|---|---:|---|
+| `SUPPORT_MAX_CONTEXT_CHUNKS` | `5` | Maximum retrieved chunks sent to answer generation. |
+| `SUPPORT_MAX_CHUNK_CHARS` | `1200` | Per-chunk text limit in the support context. |
+| `SUPPORT_ANSWER_MAX_TOKENS` | `1536` | Structured RAG answer completion budget (bounded to 4,096). |
+| `RAG_RERANKER_ENABLED` | `false` | Whether to apply the optional cross-encoder after RRF. Keep disabled based on the latest benchmark. |
+| `RAG_RERANKER_MODEL` | `Xenova/ms-marco-MiniLM-L-6-v2` | Local reranker model. |
 
 ---
 
@@ -348,6 +372,9 @@ a new required variable.
   `enquiry_understood` event per request, carrying `missing_fields`,
   `questions_count`, `completeness`, and `prompt_version`. The raw
   message is not logged.
+- **AI Support:** logs a question hash, audience, intent/source, answer type,
+  citation count, retrieval result count, and live-data source. Raw JWTs and
+  question text are not included.
 - **Counters:** in-memory, thread-safe, exposed via `/metrics`. Reset on
   process restart; not shared across workers. Today the counters are
   Chat Safety-specific (`guardrail_*`); Enquiry does not increment them.
@@ -430,7 +457,8 @@ ruff format --check .           # formatting
   (`app.capabilities.chat_safety.*` or `app.capabilities.enquiry.*`).
   If code is genuinely shared, move it to `app/core/`, `app/llm/`, or
   `app/observability/`.
-- Do not access the Swabi PostgreSQL database. Use `SwabiClient`.
+- Do not access the Swabi PostgreSQL database. Use the approved NestJS API
+  integration (`SwabiClient` or the support live-data transport).
 - Do not instantiate a provider SDK outside `app/llm/` (and the Gemini
   branch of `chat_safety/llm_adapter.py`, which is the one sanctioned
   exception).
@@ -459,7 +487,7 @@ Referenced here so they are not lost:
 - **Rate-limit expectation with NestJS** — who throttles, at what point.
 - **Async refactor of the LLM path** — currently only `generate_sync()`
   pools connections; `generate()` opens a fresh `AsyncClient` per
-  attempt. Both live capabilities are sync today, so the cost is zero.
+  attempt. Current capability orchestration uses synchronous call paths.
   Do the refactor when a capability needs to be async end-to-end, or
   when thread-pool saturation shows in metrics.
 - **Tail latency policy** — P95 on the sync path can reach 4s under
@@ -473,6 +501,18 @@ Referenced here so they are not lost:
 - **`GUARDRAIL_API_TOKEN` rename** — historical name; the value is now
   the general AI service token. Rename to `AI_SERVICE_TOKEN` requires
   coordination with NestJS. Not urgent.
+- **Phase 2 grounding acceptance** — rerun the semantic grounding evaluation
+  after the completion-budget and citation-context changes, review per-case
+  findings, and agree on product-owned quality thresholds.
+- **Phase 2 end-to-end acceptance** — verify real NestJS responses, auth,
+  decryption, empty results, error handling, and stale-policy rejection
+  during an index promotion. The automated suite does not prove deployment
+  integration.
+- **Package search constraints** — the current NestJS package API supports
+  `page`, `limit`, and `destination` only. Season, date availability, budget,
+  and group-size filtering require backend API support.
+- **Phase 3: Bid and Offer Analyzer** — not started; begin after Phase 2
+  acceptance is complete.
 
 ---
 
@@ -558,6 +598,22 @@ extraction returns 502 or 504 and the frontend prompts a retry. There is
 no fail-open path because a partial or missing extraction is worse than
 an explicit error.
 
+### AI Support
+
+| Failure | Behavior |
+|---|---|
+| Missing or empty bearer token | 401 before support processing. |
+| Private live API returns an error, malformed payload, or decryption error | Safe `needs_live_data` response; do not fabricate current facts. |
+| Public catalogue API fails | Safe `needs_live_data` response; do not substitute stale catalogue data. |
+| `CURRENT` missing, Qdrant unavailable, or alias mismatch on the RAG path | Fail closed; do not use an unverified knowledge version. |
+| Retrieval fails or returns no evidence | `insufficient_context` with audience-specific app guidance. |
+| Structured answer is truncated | Gateway retries once with an increased completion budget, capped at 4,096 tokens. |
+| LLM answer cites no retrieved chunks or only unknown IDs | Fail closed to `insufficient_context`; mixed valid/invalid citations retain only valid IDs. |
+
+Successful live API responses are formatted from allowlisted fields and
+returned without an answer-generation LLM call. This protects live answers
+from LLM formatting failures and avoids unnecessary provider tokens.
+
 ### Extending
 
 To add a field:
@@ -572,3 +628,119 @@ To add a field:
 
 The extractor is deliberately one prompt and one schema. Do not split
 it into multiple LLM calls unless accuracy demands it.
+
+---
+
+## 15. AI Support and RAG (Phase 2)
+
+### Endpoint and request path
+
+`POST /api/v1/support/ask` accepts:
+
+```json
+{
+  "question": "How can I book a package through an enquiry?",
+  "audience": "customer"
+}
+```
+
+The route requires a user `Authorization: Bearer ...` header. It validates
+that a non-empty bearer token was provided, then passes it explicitly to
+the support service. Public catalogue intents may call NestJS without user
+authentication; private customer/vendor intents require the JWT. NestJS
+remains responsible for authorization and business state.
+
+### Routing and answer source
+
+The service resolves an intent before retrieving knowledge:
+
+1. Deterministic patterns recognize supported customer/vendor data and
+   public catalogue intents.
+2. Ambiguous likely-live requests can use the intent classifier.
+3. Audience checks prevent cross-role access; private intents require a JWT.
+4. A successful live API response is formatted using allowlisted fields and
+   returned directly. No answer-generation LLM call is used for live-only
+   results.
+5. Stable policy or workflow questions use the approved RAG corpus. A
+   question with neither supported live intent nor adequate evidence fails
+   safely and gives audience-specific app guidance.
+
+Live transport currently resides in
+`app/capabilities/support/live_data.py`. It calls NestJS, forwards the JWT
+only when provided, unwraps response envelopes, and decrypts encrypted
+payloads when configured. It does not access PostgreSQL. Public intents
+include package search/detail, public activity search, and popular
+destinations. Customer/vendor private intents use their corresponding
+NestJS APIs.
+
+The package list API currently supports `page`, `limit`, and `destination`.
+It does not expose season, travel-date availability, budget, or group-size
+filters. Support responses must not claim those constraints have been
+applied or that matching availability is confirmed.
+
+### Retrieval, policy lifecycle, and answers
+
+The knowledge path:
+
+1. Reads `data/rag_index/CURRENT` and confirms the Qdrant alias points at the
+   same version. Missing state, Qdrant failure, or mismatch fails closed.
+2. Filters chunks by audience, area, and lifecycle. Policy chunks must be
+   approved, effective on the current date, and not expired. Lifecycle
+   status is metadata in the YAML knowledge configuration and Qdrant; there
+   is no AI-PostgreSQL policy registry.
+3. Runs dense vector and BM25 keyword search over that eligible version and
+   combines rankings with Reciprocal Rank Fusion (RRF).
+4. Sends up to `SUPPORT_MAX_CONTEXT_CHUNKS` chunks (default 5), each limited
+   by `SUPPORT_MAX_CHUNK_CHARS` (default 1,200), to structured answer
+   generation.
+5. Validates answer type and citations against retrieved chunk IDs. Invalid
+   IDs are removed; an answer without any valid knowledge citation fails
+   closed. Citation output is capped at three.
+
+Structured answers use `SUPPORT_ANSWER_MAX_TOKENS` (default 1,536). The
+Groq response `finish_reason` is retained; when it is `length` and the
+structured output is invalid, the gateway retries with a larger completion
+budget, capped at 4,096. Other invalid structured output receives the normal
+single retry. This mitigates provider truncation but does not guarantee
+provider availability or correctness.
+
+### Reranking and current benchmark
+
+An optional local cross-encoder can rerank the fused RRF candidates, but
+serving defaults to `RAG_RERANKER_ENABLED=false`. The latest 15-case
+comparison reported:
+
+| Mode | Recall@5 | MRR@5 | nDCG@5 | Mean latency |
+|---|---:|---:|---:|---:|
+| Hybrid RRF | 0.973 | 0.950 | 0.937 | 2,135 ms |
+| Hybrid + reranker | 0.940 | 0.922 | 0.911 | 3,636 ms |
+
+Reranking regressed each reported retrieval metric and increased latency in
+this run; do not enable it for production based on model availability alone.
+See [`hybrid_retrieval.md`](hybrid_retrieval.md) and
+`retrieval-reranked-phase2.json` for evaluation details.
+
+The latest `grounding-report-phase2.json` predates the structured-output and
+citation changes. It reported retrieval evidence recall 0.973, citation
+precision 0.700, citation recall 0.716, and semantic judge coverage 0.467
+(8 judge errors). Its answer-support rate of 1.0 applies only to the seven
+judged cases. The grounding CLI records judge errors per case and continues
+with later cases.
+
+### Phase 2 status
+
+Phase 2 implementation is substantially present, but acceptance remains
+open. Before sign-off:
+
+- Rerun grounding after the latest code changes and review citations,
+  unsupported answers, and judge coverage.
+- Verify real NestJS endpoint shapes, auth forwarding, decryption, empty
+  results, and error handling across customer, vendor, and public intents.
+- Exercise a policy update/index promotion and verify stale-version rejection
+  and activation of the new version.
+- Run combined regression and deployment checks for latency, configuration,
+  secrets, logging, and service behavior.
+
+These are release/acceptance checks; unit-test success alone does not prove
+the live NestJS deployment contract. Phase 3 (Bid and Offer Analyzer) should
+start after these checks are accepted.

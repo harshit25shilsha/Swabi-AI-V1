@@ -256,25 +256,15 @@ def test_booking_detail_uses_live_data_without_rag_chunks(
     assert "upcoming" in result.answer.lower()
     retriever.search.assert_not_called()
 
-    prompt_sent_to_llm = (
-        patch_gateway.generate_structured_sync.call_args.kwargs["prompt"]
-    )
-    assert "LIVE DATA" in prompt_sent_to_llm
-    assert "BK-8941" in prompt_sent_to_llm
-    assert "- Booking status: upcoming" in prompt_sent_to_llm
+    assert "BK-8941" in result.answer
+    assert "- Booking status: upcoming" in result.answer
+    patch_gateway.generate_structured_sync.assert_not_called()
 
 
-def test_booking_detail_insufficient_context_falls_back_to_live_data(
+def test_booking_detail_answer_does_not_depend_on_llm_output(
     retriever, patch_version_ok, patch_gateway
 ):
     booking_id = "46f46148-e88d-42b6-bbd4-d87f14009f65"
-
-    patch_gateway.generate_structured_sync.return_value = LLMAnswerOutput(
-        answer_type=AnswerType.INSUFFICIENT_CONTEXT,
-        answer="I don't have enough context.",
-        citation_chunk_ids=[],
-        confidence=0.0,
-    )
 
     fake_payload = {
         "booking": {
@@ -310,3 +300,4 @@ def test_booking_detail_insufficient_context_falls_back_to_live_data(
     assert "BK-8941" in result.answer
     assert "upcoming" in result.answer.lower()
     retriever.search.assert_not_called()
+    patch_gateway.generate_structured_sync.assert_not_called()

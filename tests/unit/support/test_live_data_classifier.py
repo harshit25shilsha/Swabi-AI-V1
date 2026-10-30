@@ -163,3 +163,23 @@ def test_vendor_asking_customer_scope_none(q):
 def test_policy_and_travel_questions_none(q):
     assert classify(q, "customer").intent == LiveDataIntent.NONE
     assert classify(q, "vendor").intent == LiveDataIntent.NONE
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_entity"),
+    [
+        (
+            "Tell me the details for package PKG-922",
+            {"package_code": "PKG-922"},
+        ),
+        (
+            "Tell me about package 17da203f-942d-4650-b9bb-b84a0d928aca",
+            {"package_id": "17da203f-942d-4650-b9bb-b84a0d928aca"},
+        ),
+    ],
+)
+def test_public_package_detail_resolves_code_or_uuid(question, expected_entity):
+    result = classify(question, "customer")
+
+    assert result.intent == LiveDataIntent.PACKAGE_DETAIL
+    assert result.entities == expected_entity

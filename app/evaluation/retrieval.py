@@ -6,9 +6,11 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from math import log2
+from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from app.evaluation.dataset import EvalDataset
 from app.rag.schemas import RetrievedChunk
 
 
@@ -23,6 +25,25 @@ class RetrievalEvalCase(BaseModel):
 class RetrievalEvalDataset(BaseModel):
     name: str
     cases: list[RetrievalEvalCase] = Field(min_length=1)
+
+
+def load_retrieval_dataset(path: str | Path) -> RetrievalEvalDataset:
+    """Load the project evaluation format and map it to retrieval labels."""
+    dataset = EvalDataset.load(path)
+    return RetrievalEvalDataset.model_validate(
+        {
+            "name": dataset.name,
+            "cases": [
+                {
+                    "id": case.id,
+                    "query": case.input,
+                    **case.expected,
+                    **case.metadata,
+                }
+                for case in dataset.cases
+            ],
+        }
+    )
 
 
 @dataclass
@@ -56,11 +77,27 @@ class RetrievalEvalReport:
     modes: dict[str, RetrievalModeReport]
 
     def to_dict(self) -> dict:
-        return {
+        result = {
             "dataset": self.dataset,
             "k": self.k,
             "modes": {name: asdict(report) for name, report in self.modes.items()},
         }
+        baseline = self.modes.get("hybrid")
+        reranked = self.modes.get("hybrid_reranked")
+        if baseline is not None and reranked is not None:
+            result["comparisons"] = {
+                "hybrid_reranked_vs_hybrid": {
+                    metric: getattr(reranked, metric) - getattr(baseline, metric)
+                    for metric in (
+                        "precision_at_k",
+                        "recall_at_k",
+                        "mrr_at_k",
+                        "ndcg_at_k",
+                        "mean_latency_ms",
+                    )
+                }
+            }
+        return result
 
 
 SearchFn = Callable[[RetrievalEvalCase, int], list[RetrievedChunk]]

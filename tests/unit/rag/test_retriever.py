@@ -100,6 +100,49 @@ def test_search_passes_tuning_options_to_hybrid_fusion(embedder, store):
     assert result[0].score == pytest.approx((1 / 22) + (1 / 21))
 
 
+def test_search_reranks_fused_candidate_pool(embedder, store):
+    reranker = MagicMock()
+    reranker.rerank.side_effect = lambda query, candidates, *, top_k: list(reversed(candidates))[
+        :top_k
+    ]
+    r = RagRetriever(embedder=embedder, store=store, reranker=reranker)
+
+    result = r.search("q", audience="customer", top_k=2)
+
+    reranker.rerank.assert_called_once()
+    query, candidates = reranker.rerank.call_args.args
+    assert query == "q"
+    assert [chunk.chunk_id for chunk in candidates] == ["id2", "id1", "id3"]
+    assert reranker.rerank.call_args.kwargs["top_k"] == 2
+    assert [chunk.chunk_id for chunk in result] == ["id3", "id1"]
+
+
+def test_reranker_error_is_reported_as_retriever_error(embedder, store):
+    from app.rag.reranker import RerankerError
+
+    reranker = MagicMock()
+    reranker.rerank.side_effect = RerankerError("model unavailable")
+    r = RagRetriever(embedder=embedder, store=store, reranker=reranker)
+
+    with pytest.raises(RetrieverError, match="reranking failed: model unavailable"):
+        r.search("q", audience="customer")
+
+
+def test_settings_can_enable_default_local_reranker(embedder, store, monkeypatch):
+    from app.rag.reranker import CrossEncoderReranker
+
+    monkeypatch.setattr("app.rag.retriever.settings.rag_reranker_enabled", True)
+    monkeypatch.setattr(
+        "app.rag.retriever.settings.rag_reranker_model",
+        "Xenova/test-model",
+    )
+
+    retriever = RagRetriever(embedder=embedder, store=store)
+
+    assert isinstance(retriever.reranker, CrossEncoderReranker)
+    assert retriever.reranker.model_name == "Xenova/test-model"
+
+
 @pytest.mark.parametrize(
     ("options", "message"),
     [

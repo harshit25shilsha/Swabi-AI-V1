@@ -60,5 +60,5 @@ class LLMAnswerOutput(BaseModel):
     """
     answer_type: AnswerType
     answer: str
-    citation_chunk_ids: list[str] = Field(default_factory=list)
+    citation_chunk_ids: list[str] = Field(default_factory=list, max_length=3)
     confidence: float | None = None

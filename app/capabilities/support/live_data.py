@@ -33,6 +33,9 @@ _UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
     r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
+_PACKAGE_CODE_RE = re.compile(r"^PKG-\d+$", re.IGNORECASE)
+_PACKAGE_LOOKUP_PAGE_SIZE = 100
+_PACKAGE_LOOKUP_MAX_PAGES = 10
 
 
 class LiveDataFetchError(Exception):
@@ -258,6 +261,56 @@ def fetch_package_detail(
 ) -> dict[str, Any]:
     response = _get(f"/packages/{package_id}", user_jwt=user_jwt)
     return {"package": _unwrap(response) or {}}
+
+
+def fetch_package_by_code(
+    user_jwt: str | None, package_code: str
+) -> dict[str, Any]:
+    """Resolve the public package code through the paginated catalogue."""
+    if not _PACKAGE_CODE_RE.fullmatch(package_code):
+        raise LiveDataFetchError("invalid package code")
+
+    examined = 0
+    total = 0
+    for page in range(1, _PACKAGE_LOOKUP_MAX_PAGES + 1):
+        response = _get(
+            "/packages",
+            user_jwt=user_jwt,
+            params={"page": page, "limit": _PACKAGE_LOOKUP_PAGE_SIZE},
+        )
+        data = _unwrap(response)
+        if not isinstance(data, dict):
+            raise LiveDataFetchError(
+                "/packages: unexpected package catalogue response"
+            )
+        packages = data.get("packages")
+        if not isinstance(packages, list):
+            raise LiveDataFetchError(
+                "/packages: package catalogue is missing its packages list"
+            )
+        try:
+            total = int(data.get("total", len(packages)))
+        except (TypeError, ValueError) as exc:
+            raise LiveDataFetchError(
+                "/packages: invalid package catalogue total"
+            ) from exc
+
+        for package in packages:
+            if not isinstance(package, dict):
+                continue
+            code = package.get("packageCode")
+            if isinstance(code, str) and code.casefold() == package_code.casefold():
+                return {"package": package}
+
+        examined += len(packages)
+        if not packages or examined >= total:
+            return {"package": {}, "not_found_code": package_code}
+
+    if examined < total:
+        raise LiveDataFetchError(
+            "/packages: package code lookup exceeded the safe page limit"
+        )
+    return {"package": {}, "not_found_code": package_code}
 
 
 def fetch_activity_list(
@@ -495,6 +548,22 @@ def fetch_for_intent(
         key = _ID_REQUIRED[intent]
         entity_id = entities.get(key) or entities.get("id")
         entity_id_str = str(entity_id) if entity_id is not None else None
+        package_code = entities.get("package_code")
+        if (
+            intent == LiveDataIntent.PACKAGE_DETAIL
+            and not package_code
+            and entity_id_str
+            and _PACKAGE_CODE_RE.fullmatch(entity_id_str)
+        ):
+            package_code = entity_id_str
+        if (
+            intent == LiveDataIntent.PACKAGE_DETAIL
+            and package_code
+        ):
+            payload = fetch_package_by_code(
+                user_jwt, str(package_code)
+            )
+            return "GET /api/packages (lookup by package code)", payload
         if entity_id_str and _UUID_RE.match(entity_id_str):
             payload = handler(user_jwt, entity_id_str)
             return _ENDPOINT_LABEL[intent], payload

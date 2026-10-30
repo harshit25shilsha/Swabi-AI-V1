@@ -20,6 +20,17 @@
       "metadata": {"audience": "customer", "area": "swabi"}
     },
     {
+      "id": "package-booking-through-enquiry",
+      "input": "How can I book a package in the Swabi platform?",
+      "expected": {
+        "relevant_chunk_ids": [
+          "47c29ba71be7e11c",
+          "c3a5eb066f5f711e"
+        ]
+      },
+      "metadata": {"audience": "customer", "area": "swabi"}
+    },
+    {
       "id": "escrow-milestones",
       "input": "When does the vendor receive money held in escrow?",
       "expected": {"relevant_chunk_ids": ["deedb842b9015315"]},

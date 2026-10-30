@@ -13,6 +13,12 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.rag.embeddings import EmbeddingError, EmbeddingModel
 from app.rag.qdrant_store import QdrantStore, QdrantStoreError
+from app.rag.reranker import (
+    DEFAULT_CROSS_ENCODER_MODEL,
+    CrossEncoderReranker,
+    Reranker,
+    RerankerError,
+)
 from app.rag.schemas import RetrievedChunk
 
 log = get_logger(__name__)
@@ -61,9 +67,15 @@ class RagRetriever:
         *,
         embedder: EmbeddingModel | None = None,
         store: QdrantStore | None = None,
+        reranker: Reranker | None = None,
     ) -> None:
         self.embedder = embedder or EmbeddingModel()
         self.store = store or QdrantStore()
+        self.reranker = reranker
+        if self.reranker is None and settings.rag_reranker_enabled:
+            self.reranker = CrossEncoderReranker(
+                settings.rag_reranker_model or DEFAULT_CROSS_ENCODER_MODEL
+            )
 
     def search(
         self,
@@ -126,8 +138,16 @@ class RagRetriever:
         except Exception as exc:  # noqa: BLE001
             raise RetrieverError(f"unexpected retriever error: {exc}") from exc
 
-        return reciprocal_rank_fusion(
+        fused_results = reciprocal_rank_fusion(
             (dense_results, keyword_results),
-            top_k=limit,
+            top_k=candidate_limit,
             rank_constant=rrf_rank_constant,
         )
+        if self.reranker is None:
+            return fused_results[:limit]
+        try:
+            return self.reranker.rerank(query, fused_results, top_k=limit)
+        except RerankerError as exc:
+            raise RetrieverError(f"reranking failed: {exc}") from exc
+        except Exception as exc:  # noqa: BLE001
+            raise RetrieverError(f"unexpected reranker error: {exc}") from exc

@@ -115,6 +115,10 @@ These are ranking signals, not probabilities or calibrated confidence.
 1. **Resolve what kind of question this is.** The support service routes live
    business questions to authorized Swabi APIs when appropriate. RAG is for
    stable knowledge, not current bookings, wallet balances, or live bids.
+   Successful live API responses are rendered from allowlisted fields by
+   deterministic formatters; they do not depend on an LLM call. This keeps
+   current facts grounded in the API and avoids spending Groq tokens to
+   rephrase data the service already knows how to present.
 2. **Verify knowledge authority.** Before answering from RAG, the service
    checks that the Qdrant alias points at the version named by local
    `CURRENT`. If they disagree, the service fails closed rather than serve
@@ -122,8 +126,11 @@ These are ranking signals, not probabilities or calibrated confidence.
 3. **Pin retrieval to that version.** The verified version is passed to the
    retriever. Both searches target the same versioned collection, preventing
    dense and BM25 from mixing different published indexes.
-4. **Embed the question.** FastEmbed creates the query vector used for dense
-   search. An empty query returns no results; embedding failures become
+4. **Prepare and embed the retrieval query.** Known general process patterns
+   can be expanded into canonical retrieval wording; package-booking questions
+   currently map to the documented enquiry/bidding workflow. The original
+   question is still sent to the answer model. FastEmbed embeds the prepared
+   query; an empty query returns no results and embedding failures become
    retrieval errors.
 5. **Apply the same eligibility rules to both methods.** Qdrant filters
    audience, area, and current policy lifecycle before ranking:
@@ -144,6 +151,12 @@ These are ranking signals, not probabilities or calibrated confidence.
    retrieved text to the answer model. It validates citations against the
    retrieved IDs and returns a safe insufficient-context response if
    retrieval fails or yields no chunks.
+
+When retrieval cannot support an answer, the fallback suggests relevant
+customer or vendor app areas (for example, vendors can check New Enquiries,
+bids, Wallet/Transactions, Withdrawals, or Subscription) and directs policy
+or unresolved account questions to Swabi support. These suggestions do not
+replace a grounded policy answer.
 
 The public support response reports `retrieval_mode_used="hybrid"` when the
 knowledge base was searched. For answers supplied only by a live API, it
@@ -182,10 +195,14 @@ The labeled cases live in
 Each case contains a query, one or more relevant chunk IDs, audience, and
 area. Multiple labels are appropriate when an answer spans several source
 passages. Labels should be reviewed against the current knowledge source and
-index whenever chunks change.
+index whenever chunks change. The evaluation runners use the same deterministic
+query preparation as production, so process-query rewrites are included in
+retrieval metrics.
 
 The evaluation runner compares `dense`, `bm25`, and `hybrid` search and
-reports per-case rankings, metrics, and mean latency:
+reports per-case rankings, metrics, and mean latency. With
+`--include-reranked`, it also runs `hybrid_reranked` and reports aggregate
+quality/latency deltas against `hybrid`:
 
 - **Recall@k** = relevant returned chunks in the first `k` / all labeled
   relevant chunks. This measures coverage.
@@ -223,6 +240,20 @@ The CLI checks index authority and records the knowledge version, embedding
 model, dense score threshold, and fusion settings in its JSON output. It does
 not modify production settings.
 
+For the local cross-encoder mode, install the RAG requirements
+(`fastembed>=0.9.0`) and run:
+
+```powershell
+python scripts/evaluate_retrieval.py --k 5 --include-reranked
+```
+
+The default model is FastEmbed's ONNX-compatible
+`Xenova/ms-marco-MiniLM-L-6-v2`; its weights are downloaded on first use.
+Production serving keeps reranking disabled unless
+`RAG_RERANKER_ENABLED=true`. `RagRetriever` accepts a `Reranker` implementation
+so a future deployment-specific cloud model can be injected without coupling
+retrieval to a vendor.
+
 ### Tune fusion for experiments
 
 The evaluator exposes two experimental parameters:
@@ -244,9 +275,25 @@ These are evaluator arguments, not changes to production defaults. Compare
 all metrics and inspect per-case ranked IDs; do not select a configuration
 based on a single aggregate score.
 
+## Grounding and citation evaluation
+
+Run `python scripts/evaluate_grounding.py` against the same authoritative
+index to execute the support-answer pipeline and measure retrieved evidence
+recall, citation integrity, and citations' precision/recall against the
+labeled evidence IDs. Add `--judge` to use the configured LLM provider to
+score semantic answer support and citation support, and identify unsupported
+claims. The judge receives each question, answer, and retrieved chunk text;
+only use it with approved evaluation data. It incurs provider latency/cost.
+
+The deterministic citation metrics do not claim to measure semantic support:
+the optional judge supplies that assessment. Review per-case results and
+expand/review the labeled evidence IDs as the knowledge base evolves. Provider errors are recorded per case in judge coverage while later cases
+continue independently; deterministic metrics are retained for every case.
+The judge output is kept deliberately short to reduce truncation risk.
+
 ## Current measured baseline
 
-Live tuning runs against the published 14-query dataset at `k=5` compared
+Earlier tuning runs against the 14-query dataset at `k=5` compared
 these hybrid settings:
 
 | Hybrid settings | Recall@5 | MRR@5 | nDCG@5 | Mean latency |
@@ -261,6 +308,12 @@ retrieved chunks were useful for the broader question. This is a reason to
 inspect labels and ranked IDs, not to assume a single parameter change will
 solve the issue.
 
+After adding the package-booking case and shared query preparation, a fresh
+15-case hybrid run at `k=5` measured precision 0.320, recall 0.973, MRR 0.950,
+and nDCG 0.937. The new booking case returned both labeled workflow chunks in
+the first two positions. These are retrieval metrics only; they do not measure
+generated-answer or citation support.
+
 The evaluator also reports dense-only and BM25-only results for each run.
 Use fresh CLI output when comparing all three modes; these hybrid-only
 tuning results should not be used to infer the standalone modes' scores.
@@ -271,6 +324,42 @@ The evaluation runs modes in sequence with a shared store, so its BM25 and
 hybrid latency numbers do not have identical cache-warming conditions.
 Run repeated measurements or compare cold and warm runs separately before
 making performance claims.
+
+### Latest Phase 2 comparison
+
+The 2026-10-30 `retrieval-reranked-phase2.json` run uses 15 cases at `k=5`.
+Hybrid RRF measured recall 0.973, MRR 0.950, nDCG 0.937, and mean latency
+2,135 ms. The reranked run measured recall 0.940, MRR 0.922, nDCG 0.911,
+and 3,636 ms. In this newer comparison reranking regressed every reported
+quality metric and increased latency, so keep `RAG_RERANKER_ENABLED=false`.
+This supersedes the earlier 14-case reranker comparison below for the Phase 2
+release decision.
+
+The matching `grounding-report-phase2.json` was an incomplete judge run:
+judge coverage was 0.467 after structured-output failures, citation precision
+was 0.700, and citation recall was 0.716. Treat its 1.0 answer-support rate
+as applying only to the seven judged cases, not as a full-dataset result.
+Rerun grounding after the completion-budget and citation-context changes
+before using it as a release-quality baseline.
+
+### Local cross-encoder result
+
+On authoritative index `a441a35b9643` at `k=5`, the local
+`Xenova/ms-marco-MiniLM-L-6-v2` reranker was compared with hybrid RRF:
+
+| Mode | Precision@5 | Recall@5 | MRR@5 | nDCG@5 | Mean latency |
+|---|---:|---:|---:|---:|---:|
+| Hybrid RRF | 0.314 | 0.971 | 0.946 | 0.932 | 2,109 ms |
+| Hybrid RRF + cross-encoder | 0.314 | 0.971 | 0.964 | 0.954 | 4,358 ms |
+| Delta | 0.000 | 0.000 | +0.018 | +0.022 | +2,250 ms |
+
+Reranking improved MRR and nDCG slightly without changing precision or recall,
+but more than doubled mean latency in this run. Keep serving reranking disabled
+until the product accepts that trade-off; these results cover only 14 labeled
+queries and one index version. The report's per-case rankings show both gains
+and regressions: `vendor-withdrawal-steps` MRR improved from 0.25 to 1.0, while
+`booking-dispute` dropped from 1.0 to 0.5. Review the per-case rankings before
+making a release decision.
 
 ## Practical interpretation
 
@@ -298,8 +387,11 @@ live data and actions remain with the Swabi backend.
 | Query embedding and dense/BM25 orchestration | [`app/rag/retriever.py`](../app/rag/retriever.py) |
 | Qdrant filters, vector search, BM25 search, BM25 cache | [`app/rag/qdrant_store.py`](../app/rag/qdrant_store.py) |
 | Embedding model wrapper | [`app/rag/embeddings.py`](../app/rag/embeddings.py) |
-| Support version check and retrieval call | [`app/capabilities/support/service.py`](../app/capabilities/support/service.py) |
+| Retrieval query preparation and support integration | [`app/capabilities/support/retrieval_query.py`](../app/capabilities/support/retrieval_query.py), [`app/capabilities/support/service.py`](../app/capabilities/support/service.py) |
 | Ranking metrics and evaluation report | [`app/evaluation/retrieval.py`](../app/evaluation/retrieval.py) |
 | Evaluation CLI and mode wiring | [`scripts/evaluate_retrieval.py`](../scripts/evaluate_retrieval.py) |
+| Local reranker and injectable interface | [`app/rag/reranker.py`](../app/rag/reranker.py) |
+| Grounding and citation metrics | [`app/evaluation/grounding.py`](../app/evaluation/grounding.py) |
+| Grounding evaluation CLI | [`scripts/evaluate_grounding.py`](../scripts/evaluate_grounding.py) |
 | Labeled evaluation queries | [`app/evaluation/datasets/retrieval_v1.json`](../app/evaluation/datasets/retrieval_v1.json) |
 | BM25 dependency | [`requirements-rag.txt`](../requirements-rag.txt) |

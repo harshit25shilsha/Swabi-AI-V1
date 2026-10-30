@@ -18,14 +18,19 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import email.utils
+import random
+import re
 import threading
 import time
+from datetime import UTC, datetime
 
 import httpx
 
 from app.core.config import settings
 from app.core.exceptions import AIProviderError, AITimeoutError
 from app.core.logging import get_logger
+from app.llm.rate_limit import groq_tpm_limiter
 from app.llm.schemas import LLMResponse, TokenUsage
 
 log = get_logger(__name__)
@@ -35,11 +40,14 @@ GROQ_CHAT_URL = settings.groq_chat_url
 # HTTP statuses worth retrying
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
-# Initial retry delay. Bounded backoff: delay, delay*2, delay*4, ...
-# With max_retries=2 the sequence is 0.2 -> 0.4, total ~0.6s of wait
-# before fail-open. Larger initial delays made transient failures
-# user-visible on the synchronous moderation path.
+# Initial retry delay for network errors and non-rate-limit transient errors.
 _INITIAL_RETRY_DELAY = 0.2
+_RETRY_JITTER_MAX_SECONDS = 0.5
+
+_RETRY_AFTER_SECONDS = re.compile(
+    r"try again in\s+(\d+(?:\.\d+)?)\s*(milliseconds?|ms|seconds?|secs?|s)\b",
+    re.IGNORECASE,
+)
 
 
 # Module-level shared sync client
@@ -54,6 +62,64 @@ _INITIAL_RETRY_DELAY = 0.2
 
 _sync_client: httpx.Client | None = None
 _sync_client_lock = threading.Lock()
+_request_semaphore = threading.BoundedSemaphore(
+    settings.groq_max_concurrent_requests
+)
+
+
+def _retry_delay(response: httpx.Response, fallback: float) -> float:
+    """Use Groq's advertised retry time when available, with small jitter."""
+    advised: float | None = None
+    retry_after = response.headers.get("Retry-After")
+    if retry_after:
+        try:
+            advised = max(0.0, float(retry_after))
+        except ValueError:
+            try:
+                retry_at = email.utils.parsedate_to_datetime(retry_after)
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=UTC)
+                advised = max(
+                    0.0,
+                    (retry_at - datetime.now(UTC)).total_seconds(),
+                )
+            except (TypeError, ValueError, OverflowError):
+                advised = None
+
+    if advised is None:
+        match = _RETRY_AFTER_SECONDS.search(response.text)
+        if match:
+            advised = float(match.group(1))
+            if match.group(2).lower() in {"ms", "millisecond", "milliseconds"}:
+                advised /= 1000
+
+    delay = max(fallback, advised or 0.0)
+    return delay + random.uniform(0.0, min(delay * 0.1, _RETRY_JITTER_MAX_SECONDS))
+
+
+def _estimate_request_tokens(payload: dict[str, object]) -> int:
+    """Conservatively estimate prompt plus completion tokens without a tokenizer."""
+    messages = payload.get("messages", [])
+    text_chars = sum(
+        len(str(message.get("content", "")).encode("utf-8"))
+        for message in messages
+        if isinstance(message, dict)
+    )
+    prompt_estimate = (text_chars + 3) // 4 + 8 * len(messages)
+    completion_budget = payload.get(
+        "max_completion_tokens",
+        payload.get("max_tokens", settings.llm_max_tokens),
+    )
+    try:
+        completion_estimate = max(0, int(completion_budget))
+    except (TypeError, ValueError):
+        completion_estimate = settings.llm_max_tokens
+    return prompt_estimate + completion_estimate
+
+
+async def _acquire_request_slot() -> None:
+    while not _request_semaphore.acquire(blocking=False):
+        await asyncio.sleep(0.05)
 
 
 def _get_sync_client() -> httpx.Client:
@@ -125,6 +191,8 @@ class GroqProvider:
             "messages": messages,
             "temperature": temperature,
         }
+        if "max_tokens" not in extra and "max_completion_tokens" not in extra:
+            payload["max_tokens"] = settings.llm_max_tokens
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
         payload.update(extra)
@@ -146,7 +214,8 @@ class GroqProvider:
     @staticmethod
     def _parse_response(data: dict, model_fallback: str) -> LLMResponse:
         try:
-            choice = data["choices"][0]["message"]["content"]
+            completion = data["choices"][0]
+            choice = completion["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
             raise AIProviderError(f"Groq malformed response: {exc}") from exc
 
@@ -160,7 +229,10 @@ class GroqProvider:
                 total_tokens=usage.get("total_tokens", 0),
             ),
             latency_ms=0.0,  # caller fills this in
-            metadata={"provider": "groq"},
+            metadata={
+                "provider": "groq",
+                "finish_reason": completion.get("finish_reason"),
+            },
         )
 
     # Async
@@ -179,17 +251,26 @@ class GroqProvider:
         attempt = 0
         delay = _INITIAL_RETRY_DELAY
         last_exc: Exception | None = None
+        estimated_tokens = _estimate_request_tokens(payload)
 
         while attempt <= self.max_retries:
             attempt += 1
             start = time.perf_counter()
             try:
-                async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    resp = await client.post(
-                        GROQ_CHAT_URL,
-                        headers=self._headers(),
-                        json=payload,
+                await _acquire_request_slot()
+                try:
+                    reservation_id = await asyncio.to_thread(
+                        groq_tpm_limiter.wait_for_capacity,
+                        estimated_tokens,
                     )
+                    async with httpx.AsyncClient(timeout=self.timeout) as client:
+                        resp = await client.post(
+                            GROQ_CHAT_URL,
+                            headers=self._headers(),
+                            json=payload,
+                        )
+                finally:
+                    _request_semaphore.release()
             except httpx.TimeoutException as exc:
                 last_exc = AITimeoutError(f"Groq timeout after {self.timeout}s")
                 log.warning(
@@ -211,13 +292,17 @@ class GroqProvider:
                 delay *= 2
                 continue
 
+            groq_tpm_limiter.update_from_response(
+                resp.headers,
+                resp.text if resp.status_code >= 400 else "",
+            )
             if resp.status_code in RETRYABLE_STATUS and attempt <= self.max_retries:
                 log.warning(
                     "Groq retryable status %s (attempt %d)",
                     resp.status_code,
                     attempt,
                 )
-                await asyncio.sleep(delay)
+                await asyncio.sleep(_retry_delay(resp, delay))
                 delay *= 2
                 continue
 
@@ -244,7 +329,14 @@ class GroqProvider:
                 "provider": "groq",
                 "attempt": attempt,
                 "mode": "async",
+                "finish_reason": result.metadata.get("finish_reason"),
             }
+            if result.usage.total_tokens > 0:
+                groq_tpm_limiter.reconcile_reservation(
+                    reservation_id,
+                    estimated_tokens,
+                    result.usage.total_tokens,
+                )
             return result
 
         # Unreachable in practice: the loop either returns or raises.
@@ -271,18 +363,23 @@ class GroqProvider:
         attempt = 0
         delay = _INITIAL_RETRY_DELAY
         last_exc: Exception | None = None
+        estimated_tokens = _estimate_request_tokens(payload)
 
         while attempt <= self.max_retries:
             attempt += 1
             start = time.perf_counter()
             try:
                 client = _get_sync_client()
-                resp = client.post(
-                    GROQ_CHAT_URL,
-                    headers=self._headers(),
-                    json=payload,
-                    timeout=self.timeout,
-                )
+                with _request_semaphore:
+                    reservation_id = groq_tpm_limiter.wait_for_capacity(
+                        estimated_tokens
+                    )
+                    resp = client.post(
+                        GROQ_CHAT_URL,
+                        headers=self._headers(),
+                        json=payload,
+                        timeout=self.timeout,
+                    )
             except httpx.TimeoutException as exc:
                 last_exc = AITimeoutError(f"Groq timeout after {self.timeout}s")
                 log.warning(
@@ -304,13 +401,17 @@ class GroqProvider:
                 delay *= 2
                 continue
 
+            groq_tpm_limiter.update_from_response(
+                resp.headers,
+                resp.text if resp.status_code >= 400 else "",
+            )
             if resp.status_code in RETRYABLE_STATUS and attempt <= self.max_retries:
                 log.warning(
                     "Groq sync retryable status %s (attempt %d)",
                     resp.status_code,
                     attempt,
                 )
-                time.sleep(delay)
+                time.sleep(_retry_delay(resp, delay))
                 delay *= 2
                 continue
 
@@ -335,7 +436,14 @@ class GroqProvider:
                 "provider": "groq",
                 "attempt": attempt,
                 "mode": "sync",
+                "finish_reason": result.metadata.get("finish_reason"),
             }
+            if result.usage.total_tokens > 0:
+                groq_tpm_limiter.reconcile_reservation(
+                    reservation_id,
+                    estimated_tokens,
+                    result.usage.total_tokens,
+                )
             return result
 
         raise AIProviderError(f"Groq sync failed after retries: {last_exc}")

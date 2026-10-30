@@ -80,6 +80,11 @@ _UUID_RE = re.compile(
     r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
 )
 _BOOKING_CODE_RE = re.compile(r"\bBK-\d+\b", re.I)
+_PACKAGE_CODE_RE = re.compile(r"\bPKG-\d+\b", re.I)
+_PACKAGE_DETAIL_CONTEXT = re.compile(
+    r"\b(details?|information|info|about|describe|what\s+is|tell\s+me)\b",
+    re.I,
+)
 
 
 def _extract_uuid(q: str) -> str | None:
@@ -99,6 +104,14 @@ def _extract_booking_id(q: str) -> str | None:
         return uuid
     m = _BOOKING_CODE_RE.search(q)
     return m.group(0).upper() if m else None
+
+
+def _extract_package_id(q: str) -> tuple[str | None, str | None]:
+    package_uuid = _extract_uuid(q)
+    if package_uuid:
+        return package_uuid, None
+    match = _PACKAGE_CODE_RE.search(q)
+    return (None, match.group(0).upper()) if match else (None, None)
 
 
 # Supported by the backend: bookings = all|cancelled|pending|upcoming
@@ -342,6 +355,24 @@ def classify(question: str, audience: str) -> ClassifiedIntent:
             return ClassifiedIntent(
                 intent=LiveDataIntent.NONE,
                 reason="customer-scope phrasing; vendor audience",
+            )
+
+    # Public package detail can use either the backend UUID or visible code.
+    # A package code is specific enough to identify a requested catalogue
+    # item without consulting the LLM classifier first.
+    if _PACKAGE_DETAIL_CONTEXT.search(q):
+        package_id, package_code = _extract_package_id(q)
+        package_context = re.search(r"\bpackages?\b", q, re.I) is not None
+        if package_code or (package_id and package_context):
+            entities = (
+                {"package_id": package_id}
+                if package_id
+                else {"package_code": package_code}
+            )
+            return ClassifiedIntent(
+                LiveDataIntent.PACKAGE_DETAIL,
+                entities,
+                reason="package detail",
             )
 
     # --- Customer intents ----------------------------------------------

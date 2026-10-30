@@ -99,6 +99,61 @@ def test_package_search_no_jwt(
     assert r.retrieval_mode_used == "not_applicable"
 
 
+def test_winter_package_search_returns_live_catalogue_and_discloses_limit(
+    retriever, patch_version_ok, patch_gateway
+):
+    question = (
+        "provide me available packages in swabi platform for winter "
+        "that i can book"
+    )
+    with patch(
+        "app.capabilities.support.service._get_resolver"
+    ) as rmock, patch(
+        "app.capabilities.support.service.fetch_for_intent",
+        return_value=(
+            "GET /api/packages",
+            {
+                "packages": [{
+                    "packageCode": "PKG-922",
+                    "title": "Rishikesh Tours",
+                    "destination": "India",
+                    "duration": "2 Days",
+                    "price": 2000,
+                    "currency": "INR",
+                }],
+                "total": 1,
+            },
+        ),
+    ):
+        rmock.return_value.resolve.return_value = MagicMock(
+            intent=LiveDataIntent.PACKAGE_SEARCH,
+            entities={},
+            source="deterministic",
+            reason="public_package_search",
+        )
+        response = ask(
+            SupportAskRequest(
+                question=question,
+                audience=Audience.CUSTOMER,
+            ),
+            retriever=retriever,
+            user_jwt=None,
+        )
+
+    assert response.live_data_used is True
+    assert response.live_data_sources == ["GET /api/packages"]
+    assert response.answer_type == AnswerType.ANSWERED
+    assert "PKG-922" in response.answer
+    assert "I found one package" in response.answer
+    assert "only lets me filter packages by destination" in response.answer
+    assert "confirm the requested season" in response.answer
+    assert "provider before booking" in response.answer
+    assert " | " not in response.answer
+    assert response.provider == ""
+    patch_gateway.generate_structured_sync.assert_not_called()
+    retriever.search.assert_not_called()
+
+
 def test_package_detail_no_jwt(
     retriever, patch_version_ok, patch_gateway
 ):
@@ -136,11 +191,10 @@ def test_package_detail_no_jwt(
     assert r.live_data_used is True
     assert r.live_data_sources == ["GET /api/packages/{id}"]
 
-    # ← replaced: assert on the prompt the LLM actually received
-    prompt = patch_gateway.generate_structured_sync.call_args.kwargs["prompt"]
-    assert "LIVE DATA" in prompt
-    assert "Rishikesh Tours" in prompt
-    assert "PKG-922" in prompt
+    assert r.answer_type == AnswerType.ANSWERED
+    assert "Rishikesh Tours" in r.answer
+    assert "PKG-922" in r.answer
+    patch_gateway.generate_structured_sync.assert_not_called()
 
 
 def test_activity_search_no_jwt(
@@ -211,11 +265,10 @@ def test_popular_destinations_no_jwt(
     assert r.live_data_used is True
     assert r.live_data_sources == ["GET /api/analytics/popular-destinations"]
 
-    # ← replaced
-    prompt = patch_gateway.generate_structured_sync.call_args.kwargs["prompt"]
-    assert "LIVE DATA" in prompt
-    assert "Srinagar" in prompt
-    assert "21" in prompt
+    assert r.answer_type == AnswerType.ANSWERED
+    assert "Srinagar" in r.answer
+    assert "21" in r.answer
+    patch_gateway.generate_structured_sync.assert_not_called()
 
 def test_package_detail_formatter_produces_expected_shape():
     from app.capabilities.support.live_data_format import format_for_intent
