@@ -62,9 +62,7 @@ _RETRY_AFTER_SECONDS = re.compile(
 
 _sync_client: httpx.Client | None = None
 _sync_client_lock = threading.Lock()
-_request_semaphore = threading.BoundedSemaphore(
-    settings.groq_max_concurrent_requests
-)
+_request_semaphore = threading.BoundedSemaphore(settings.groq_max_concurrent_requests)
 
 
 def _retry_delay(response: httpx.Response, fallback: float) -> float:
@@ -371,9 +369,7 @@ class GroqProvider:
             try:
                 client = _get_sync_client()
                 with _request_semaphore:
-                    reservation_id = groq_tpm_limiter.wait_for_capacity(
-                        estimated_tokens
-                    )
+                    reservation_id = groq_tpm_limiter.wait_for_capacity(estimated_tokens)
                     resp = client.post(
                         GROQ_CHAT_URL,
                         headers=self._headers(),

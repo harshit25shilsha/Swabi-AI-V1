@@ -162,9 +162,7 @@ def test_distributed_limiter_rejects_request_larger_than_detected_quota(monkeypa
         limiter.wait_for_capacity(7000)
 
 
-def test_distributed_limiter_falls_back_to_local_when_redis_is_unavailable(
-    monkeypatch, caplog
-):
+def test_distributed_limiter_falls_back_to_local_when_redis_is_unavailable(monkeypatch, caplog):
     limiter = GroqTokenRateLimiter(
         limit=100,
         utilization=0.8,

@@ -129,9 +129,7 @@ def _make_judge(gateway: LLMGateway):
                 max_tokens=1024,
             )
         except (AIProviderError, AITimeoutError, AIValidationError) as exc:
-            raise GroundingJudgeError(
-                f"LLM judge failed ({type(exc).__name__})"
-            ) from exc
+            raise GroundingJudgeError(f"LLM judge failed ({type(exc).__name__})") from exc
 
     return judge
 

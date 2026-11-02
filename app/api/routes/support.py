@@ -7,6 +7,7 @@ The AI service does NOT accept a service token on this route. The user
 JWT is forwarded unchanged to the Swabi NestJS backend on any live-data
 call inside the service.
 """
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Header, HTTPException, Request, status

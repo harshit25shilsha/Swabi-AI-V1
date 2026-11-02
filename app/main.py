@@ -5,6 +5,9 @@ from __future__ import annotations
 import uuid
 from contextlib import asynccontextmanager
 
+import asyncio
+import logging
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -31,18 +34,83 @@ from app.observability.middleware import ObservabilityMiddleware
 
 setup_logging()
 
+logger = logging.getLogger(__name__)
+
+def _warm_support_bm25() -> None:
+    """Warm BM25 indexes for supported customer/vendor retrieval scopes.
+
+    Warm-up is best-effort. A Qdrant or version-authority failure must not
+    prevent the FastAPI application from starting.
+    """
+    try:
+        from app.capabilities.support.service import _get_retriever
+        from app.rag.version_check import check_version_authority
+
+        retriever = _get_retriever()
+
+        # Use the same version-authority check as the support request path.
+        version = check_version_authority(store=retriever.store)
+
+        if not version.ok or not version.local_version:
+            logger.warning(
+                "BM25 startup warm-up skipped: knowledge version unavailable",
+                extra={
+                    "event": "rag_bm25_startup_warmup_skipped",
+                    "reason": version.reason,
+                },
+            )
+            return
+
+        # "both" and omitted values have identical filters. The store
+        # normalizes them to the same cache key.
+        audiences = (None, "customer", "vendor")
+        areas = (None, "swabi", "travel")
+
+        warmed = 0
+
+        for audience in audiences:
+            for area in areas:
+                retriever.store.warm_keyword_index(
+                    audience=audience,
+                    area=area,
+                    index_version=version.local_version,
+                )
+                warmed += 1
+
+        logger.info(
+            "BM25 startup warm-up completed",
+            extra={
+                "event": "rag_bm25_startup_warmup_completed",
+                "knowledge_version": version.local_version,
+                "scope_attempts": warmed,
+            },
+        )
+
+    except Exception:
+        logger.warning(
+            "BM25 startup warm-up failed; runtime indexing remains available",
+            extra={"event": "rag_bm25_startup_warmup_failed"},
+            exc_info=True,
+        )
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Connect Redis on startup; close on shutdown."""
+    """Connect services, warm RAG indexes, and close resources."""
     await redis_manager.connect()
+
     try:
+        # Qdrant and BM25 operations are synchronous. Run them outside
+        # the event loop so startup work does not block async execution.
+        await asyncio.to_thread(_warm_support_bm25)
+
         yield
+
     finally:
         close_sync_client()
         await redis_manager.close()
-
-
+        
+        
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,

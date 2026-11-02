@@ -8,6 +8,7 @@ promoted and reads are catching an inconsistent state.
 Either way: refuse to answer. Serving a stale policy is worse than an
 insufficient-context response.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -71,10 +72,7 @@ def check_version_authority(
             ok=False,
             local_version=local_version,
             alias_collection=alias_collection,
-            reason=(
-                f"alias={alias_collection!r} does not match "
-                f"expected={expected!r}"
-            ),
+            reason=(f"alias={alias_collection!r} does not match expected={expected!r}"),
         )
 
     return VersionStatus(

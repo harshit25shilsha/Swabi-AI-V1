@@ -7,6 +7,7 @@ not answerable from RAG. They must be answered by the Swabi backend
 
 This is a pre-check: the LLM is never consulted for these.
 """
+
 from __future__ import annotations
 
 import re
@@ -89,9 +90,7 @@ _GENERAL_PROCESS_PATTERNS: tuple[re.Pattern[str], ...] = (
 
 def is_general_process_question(question: str) -> bool:
     """True for policy/how-to questions that can be answered from knowledge."""
-    return bool(question) and any(
-        pattern.search(question) for pattern in _GENERAL_PROCESS_PATTERNS
-    )
+    return bool(question) and any(pattern.search(question) for pattern in _GENERAL_PROCESS_PATTERNS)
 
 
 def is_live_data_question(question: str) -> bool:

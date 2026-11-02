@@ -11,6 +11,7 @@ Order:
      with confidence. On LLM failure or low confidence, fall through to
      NONE (RAG path).
 """
+
 from __future__ import annotations
 
 import logging
@@ -51,9 +52,7 @@ _CATALOGUE_REQUEST = re.compile(
     r"october|november|december|budget|price|family|children|travelers?)\b",
     re.IGNORECASE,
 )
-_POPULAR_DESTINATIONS = re.compile(
-    r"\b(popular|trending)\s+destinations?\b", re.IGNORECASE
-)
+_POPULAR_DESTINATIONS = re.compile(r"\b(popular|trending)\s+destinations?\b", re.IGNORECASE)
 _DIRECT_PACKAGE_SEARCH = re.compile(
     r"\b(?:show|list|provide|find|search|browse|get|recommend|need|want)\b"
     r".{0,80}\b(?:packages?|tours?)\b"
@@ -71,10 +70,25 @@ _PACKAGE_DESTINATION_HINT = re.compile(
     re.IGNORECASE,
 )
 _NON_DESTINATION_HINTS = {
-    "winter", "summer", "spring", "autumn", "fall",
-    "january", "february", "march", "april", "may", "june",
-    "july", "august", "september", "october", "november", "december",
-    "the", "swabi",
+    "winter",
+    "summer",
+    "spring",
+    "autumn",
+    "fall",
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+    "the",
+    "swabi",
 }
 
 
@@ -118,10 +132,7 @@ class IntentResolver:
                 reason=det.reason,  # preserve for the service
             )
 
-        if (
-            is_general_process_question(question)
-            and not is_live_data_question(question)
-        ):
+        if is_general_process_question(question) and not is_live_data_question(question):
             return ResolvedIntent(
                 intent=LiveDataIntent.NONE,
                 source="none",
@@ -136,12 +147,9 @@ class IntentResolver:
                 reason=det.reason,
             )
 
-        direct_package_search = (
-            _DIRECT_PACKAGE_SEARCH.search(question) is not None
-        )
+        direct_package_search = _DIRECT_PACKAGE_SEARCH.search(question) is not None
         needs_entity_extraction = any(
-            match.group(1).strip().lower().split()[0]
-            not in _NON_DESTINATION_HINTS
+            match.group(1).strip().lower().split()[0] not in _NON_DESTINATION_HINTS
             and not match.group(1).strip().lower().startswith("swabi platform")
             for match in _PACKAGE_DESTINATION_HINT.finditer(question)
         )

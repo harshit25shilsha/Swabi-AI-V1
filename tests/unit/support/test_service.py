@@ -1,4 +1,5 @@
 """Service orchestration tests. Retriever and gateway are mocked."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -17,8 +18,11 @@ from app.rag.schemas import Audience, RetrievedChunk
 
 def _chunk(i: int = 1) -> RetrievedChunk:
     return RetrievedChunk(
-        chunk_id=f"id{i}", section_id=f"s{i}",
-        section_path=f"p{i}", text=f"text{i}", score=0.8,
+        chunk_id=f"id{i}",
+        section_id=f"s{i}",
+        section_path=f"p{i}",
+        text=f"text{i}",
+        score=0.8,
     )
 
 
@@ -52,9 +56,7 @@ def patch_gateway(gateway):
 
 @pytest.fixture
 def patch_version_ok():
-    with patch(
-        "app.capabilities.support.service.check_version_authority"
-    ) as m:
+    with patch("app.capabilities.support.service.check_version_authority") as m:
         v = MagicMock()
         v.ok = True
         v.local_version = "abc123"
@@ -66,10 +68,10 @@ def patch_version_ok():
 # Live-data short-circuits before anything else
 # ---------------------------------------------------------------------------
 
+
 def test_live_data_returns_needs_live_data(retriever, patch_version_ok):
     r = ask(
-        SupportAskRequest(question="What is my booking status?",
-                          audience=Audience.CUSTOMER),
+        SupportAskRequest(question="What is my booking status?", audience=Audience.CUSTOMER),
         retriever=retriever,
     )
     assert r.answer_type == AnswerType.NEEDS_LIVE_DATA
@@ -80,18 +82,16 @@ def test_live_data_returns_needs_live_data(retriever, patch_version_ok):
 # Version authority fails closed
 # ---------------------------------------------------------------------------
 
+
 def test_version_unavailable_returns_insufficient(retriever):
-    with patch(
-        "app.capabilities.support.service.check_version_authority"
-    ) as m:
+    with patch("app.capabilities.support.service.check_version_authority") as m:
         v = MagicMock()
         v.ok = False
         v.local_version = "abc"
         v.reason = "alias mismatch"
         m.return_value = v
         r = ask(
-            SupportAskRequest(question="What is the policy?",
-                              audience=Audience.CUSTOMER),
+            SupportAskRequest(question="What is the policy?", audience=Audience.CUSTOMER),
             retriever=retriever,
         )
     assert r.answer_type == AnswerType.INSUFFICIENT_CONTEXT
@@ -102,13 +102,11 @@ def test_version_unavailable_returns_insufficient(retriever):
 # Empty retrieval -> insufficient
 # ---------------------------------------------------------------------------
 
-def test_empty_retrieval_returns_insufficient(
-    retriever, patch_version_ok, patch_gateway
-):
+
+def test_empty_retrieval_returns_insufficient(retriever, patch_version_ok, patch_gateway):
     retriever.search.return_value = []
     r = ask(
-        SupportAskRequest(question="What about x?",
-                          audience=Audience.CUSTOMER),
+        SupportAskRequest(question="What about x?", audience=Audience.CUSTOMER),
         retriever=retriever,
     )
     assert r.answer_type == AnswerType.INSUFFICIENT_CONTEXT
@@ -120,9 +118,7 @@ def test_vendor_insufficient_answer_suggests_relevant_app_sections(
     retriever, patch_version_ok, patch_gateway
 ):
     retriever.search.return_value = []
-    with patch(
-        "app.capabilities.support.service._get_resolver"
-    ) as resolver:
+    with patch("app.capabilities.support.service._get_resolver") as resolver:
         resolver.return_value.resolve.return_value = MagicMock(
             intent=LiveDataIntent.NONE,
             entities={},
@@ -150,10 +146,10 @@ def test_vendor_insufficient_answer_suggests_relevant_app_sections(
 # Happy path
 # ---------------------------------------------------------------------------
 
+
 def test_answered_with_citation(retriever, patch_version_ok, patch_gateway):
     r = ask(
-        SupportAskRequest(question="What is the cancellation policy?",
-                          audience=Audience.CUSTOMER),
+        SupportAskRequest(question="What is the cancellation policy?", audience=Audience.CUSTOMER),
         retriever=retriever,
     )
     assert r.answer_type == AnswerType.ANSWERED
@@ -187,9 +183,7 @@ def test_booking_by_enquiry_retrieves_workflow_and_uses_llm(
     patch_gateway.generate_structured_sync.assert_called_once()
 
 
-def test_answered_but_bad_citation_downgrades(
-    retriever, patch_version_ok, gateway
-):
+def test_answered_but_bad_citation_downgrades(retriever, patch_version_ok, gateway):
     gateway.generate_structured_sync.return_value = LLMAnswerOutput(
         answer_type=AnswerType.ANSWERED,
         answer="Some answer.",
@@ -201,8 +195,7 @@ def test_answered_but_bad_citation_downgrades(
         return_value=gateway,
     ):
         r = ask(
-            SupportAskRequest(question="What about y?",
-                              audience=Audience.CUSTOMER),
+            SupportAskRequest(question="What about y?", audience=Audience.CUSTOMER),
             retriever=retriever,
         )
     assert r.answer_type == AnswerType.INSUFFICIENT_CONTEXT
@@ -247,8 +240,7 @@ def test_forbidden_path_is_redacted_without_discarding_grounded_answer(
         return_value=gateway,
     ):
         r = ask(
-            SupportAskRequest(question="What about z?",
-                              audience=Audience.CUSTOMER),
+            SupportAskRequest(question="What about z?", audience=Audience.CUSTOMER),
             retriever=retriever,
         )
     assert r.answer_type == AnswerType.ANSWERED
@@ -258,9 +250,7 @@ def test_forbidden_path_is_redacted_without_discarding_grounded_answer(
     assert r.citations[0].chunk_id == "id1"
 
 
-def test_financial_promise_downgrades(
-    retriever, patch_version_ok, gateway
-):
+def test_financial_promise_downgrades(retriever, patch_version_ok, gateway):
     gateway.generate_structured_sync.return_value = LLMAnswerOutput(
         answer_type=AnswerType.ANSWERED,
         answer="You will get a refund of 5000.",
@@ -272,8 +262,7 @@ def test_financial_promise_downgrades(
         return_value=gateway,
     ):
         r = ask(
-            SupportAskRequest(question="What about w?",
-                              audience=Audience.CUSTOMER),
+            SupportAskRequest(question="What about w?", audience=Audience.CUSTOMER),
             retriever=retriever,
         )
     assert r.answer_type == AnswerType.INSUFFICIENT_CONTEXT
@@ -282,6 +271,7 @@ def test_financial_promise_downgrades(
 # ---------------------------------------------------------------------------
 # LLM returns out_of_scope
 # ---------------------------------------------------------------------------
+
 
 def test_llm_out_of_scope_returned(retriever, patch_version_ok, gateway):
     gateway.generate_structured_sync.return_value = LLMAnswerOutput(
@@ -295,8 +285,7 @@ def test_llm_out_of_scope_returned(retriever, patch_version_ok, gateway):
         return_value=gateway,
     ):
         r = ask(
-            SupportAskRequest(question="What's Mars weather like?",
-                              audience=Audience.CUSTOMER),
+            SupportAskRequest(question="What's Mars weather like?", audience=Audience.CUSTOMER),
             retriever=retriever,
         )
     assert r.answer_type == AnswerType.OUT_OF_SCOPE
@@ -306,14 +295,14 @@ def test_llm_out_of_scope_returned(retriever, patch_version_ok, gateway):
 # LLM error fails closed
 # ---------------------------------------------------------------------------
 
+
 def test_llm_error_returns_insufficient(retriever, patch_version_ok):
     with patch(
         "app.capabilities.support.service._get_gateway",
     ) as m:
         m.return_value.generate_structured_sync.side_effect = RuntimeError("boom")
         r = ask(
-            SupportAskRequest(question="Policy?",
-                              audience=Audience.CUSTOMER),
+            SupportAskRequest(question="Policy?", audience=Audience.CUSTOMER),
             retriever=retriever,
         )
     assert r.answer_type == AnswerType.INSUFFICIENT_CONTEXT
@@ -323,10 +312,10 @@ def test_llm_error_returns_insufficient(retriever, patch_version_ok):
 # Audience is forwarded
 # ---------------------------------------------------------------------------
 
+
 def test_audience_forwarded(retriever, patch_version_ok, patch_gateway):
     ask(
-        SupportAskRequest(question="policy?",
-                          audience=Audience.VENDOR),
+        SupportAskRequest(question="policy?", audience=Audience.VENDOR),
         retriever=retriever,
     )
     assert retriever.search.call_args.kwargs["audience"] == "vendor"
@@ -375,9 +364,7 @@ def test_support_prompt_limits_retrieved_context_and_completion(
         ("What should I do if the vendor does not show up for my booking?", Audience.CUSTOMER),
     ],
 )
-def test_process_questions_use_rag(
-    question, audience, retriever, patch_version_ok, patch_gateway
-):
+def test_process_questions_use_rag(question, audience, retriever, patch_version_ok, patch_gateway):
     response = ask(
         SupportAskRequest(question=question, audience=audience),
         retriever=retriever,

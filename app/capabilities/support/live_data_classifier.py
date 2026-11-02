@@ -10,6 +10,7 @@ extractable, the parameters the fetcher needs (booking id, enquiry id,
 status filter). The service enforces audience match and JWT presence
 before any API call.
 """
+
 from __future__ import annotations
 
 import re
@@ -132,9 +133,7 @@ _PAYMENT_STATUS_MAP: list[tuple[re.Pattern[str], str]] = [
 ]
 
 
-def _extract_status(
-    q: str, table: list[tuple[re.Pattern[str], str]]
-) -> str | None:
+def _extract_status(q: str, table: list[tuple[re.Pattern[str], str]]) -> str | None:
     for pattern, value in table:
         if pattern.search(q):
             return value
@@ -293,9 +292,7 @@ _VENDOR_WITHDRAWALS = [
 ]
 
 _VENDOR_INQUIRIES = [
-    re.compile(
-        r"\b(new\s+)?enquir(y|ies)\s+(i\s+can\s+bid|to\s+bid)\b", re.I
-    ),
+    re.compile(r"\b(new\s+)?enquir(y|ies)\s+(i\s+can\s+bid|to\s+bid)\b", re.I),
     re.compile(r"\bnew\s+enquir(y|ies)\b", re.I),
     re.compile(r"\binquir(y|ies)\s+to\s+bid\b", re.I),
     re.compile(r"\bmy\s+vendor\s+inquir(y|ies)\b", re.I),
@@ -303,9 +300,7 @@ _VENDOR_INQUIRIES = [
 
 _VENDOR_BOOKINGS = [
     re.compile(r"\bmy\s+vendor\s+bookings?\b", re.I),
-    re.compile(
-        r"\bbookings?\s+(assigned\s+to\s+me|for\s+my\s+trips?)\b", re.I
-    ),
+    re.compile(r"\bbookings?\s+(assigned\s+to\s+me|for\s+my\s+trips?)\b", re.I),
     re.compile(r"\btrips?\s+i('| a)m\s+(serving|running|operating)\b", re.I),
 ]
 
@@ -364,11 +359,7 @@ def classify(question: str, audience: str) -> ClassifiedIntent:
         package_id, package_code = _extract_package_id(q)
         package_context = re.search(r"\bpackages?\b", q, re.I) is not None
         if package_code or (package_id and package_context):
-            entities = (
-                {"package_id": package_id}
-                if package_id
-                else {"package_code": package_code}
-            )
+            entities = {"package_id": package_id} if package_id else {"package_code": package_code}
             return ClassifiedIntent(
                 LiveDataIntent.PACKAGE_DETAIL,
                 entities,
@@ -399,60 +390,38 @@ def classify(question: str, audience: str) -> ClassifiedIntent:
             )
 
         if _matches(_MY_COIN_HISTORY, q):
-            return ClassifiedIntent(
-                LiveDataIntent.MY_COIN_HISTORY, reason="coin history"
-            )
+            return ClassifiedIntent(LiveDataIntent.MY_COIN_HISTORY, reason="coin history")
         if _matches(_MY_COINS, q):
-            return ClassifiedIntent(
-                LiveDataIntent.MY_COINS, reason="coin balance"
-            )
+            return ClassifiedIntent(LiveDataIntent.MY_COINS, reason="coin balance")
         if _matches(_MY_PAYMENTS, q):
             status = _extract_status(q, _PAYMENT_STATUS_MAP)
             entities = {"status": status} if status else {}
-            return ClassifiedIntent(
-                LiveDataIntent.MY_PAYMENTS, entities, reason="my payments"
-            )
+            return ClassifiedIntent(LiveDataIntent.MY_PAYMENTS, entities, reason="my payments")
         if _matches(_MY_BOOKINGS, q):
             status = _extract_status(q, _BOOKING_STATUS_MAP)
             entities = {"status": status} if status else {}
-            return ClassifiedIntent(
-                LiveDataIntent.MY_BOOKINGS, entities, reason="my bookings"
-            )
+            return ClassifiedIntent(LiveDataIntent.MY_BOOKINGS, entities, reason="my bookings")
         if _matches(_MY_ENQUIRIES, q):
-            return ClassifiedIntent(
-                LiveDataIntent.MY_ENQUIRIES, reason="my enquiries"
-            )
+            return ClassifiedIntent(LiveDataIntent.MY_ENQUIRIES, reason="my enquiries")
 
     # --- Vendor intents -------------------------------------------------
     elif audience == "vendor":
         if _matches(_VENDOR_SUBSCRIPTION, q):
-            return ClassifiedIntent(
-                LiveDataIntent.VENDOR_SUBSCRIPTION, reason="subscription"
-            )
+            return ClassifiedIntent(LiveDataIntent.VENDOR_SUBSCRIPTION, reason="subscription")
         if _matches(_VENDOR_WITHDRAWALS, q):
-            return ClassifiedIntent(
-                LiveDataIntent.VENDOR_WITHDRAWALS, reason="withdrawals"
-            )
+            return ClassifiedIntent(LiveDataIntent.VENDOR_WITHDRAWALS, reason="withdrawals")
         if _matches(_VENDOR_TRANSACTIONS, q):
             return ClassifiedIntent(
                 LiveDataIntent.VENDOR_TRANSACTIONS,
                 reason="wallet transactions",
             )
         if _matches(_VENDOR_WALLET, q):
-            return ClassifiedIntent(
-                LiveDataIntent.VENDOR_WALLET, reason="wallet balance"
-            )
+            return ClassifiedIntent(LiveDataIntent.VENDOR_WALLET, reason="wallet balance")
         if _matches(_VENDOR_INQUIRIES, q):
-            return ClassifiedIntent(
-                LiveDataIntent.VENDOR_INQUIRIES, reason="inquiries to bid"
-            )
+            return ClassifiedIntent(LiveDataIntent.VENDOR_INQUIRIES, reason="inquiries to bid")
         if _matches(_VENDOR_BIDS, q):
-            return ClassifiedIntent(
-                LiveDataIntent.VENDOR_BIDS, reason="my bids"
-            )
+            return ClassifiedIntent(LiveDataIntent.VENDOR_BIDS, reason="my bids")
         if _matches(_VENDOR_BOOKINGS, q):
-            return ClassifiedIntent(
-                LiveDataIntent.VENDOR_BOOKINGS, reason="vendor bookings"
-            )
+            return ClassifiedIntent(LiveDataIntent.VENDOR_BOOKINGS, reason="vendor bookings")
 
     return ClassifiedIntent(reason="no match")

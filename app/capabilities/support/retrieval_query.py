@@ -7,9 +7,7 @@ import re
 from app.capabilities.support.live_data_check import is_general_process_question
 
 _BOOKING_TERMS = re.compile(r"\b(book|booking|reserve|reservation)\b", re.IGNORECASE)
-_BOOKING_FLOW_TERMS = re.compile(
-    r"\b(packages?|enquir(?:y|ies)|bids?)\b", re.IGNORECASE
-)
+_BOOKING_FLOW_TERMS = re.compile(r"\b(packages?|enquir(?:y|ies)|bids?)\b", re.IGNORECASE)
 
 
 def prepare_retrieval_query(question: str) -> str:

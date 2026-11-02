@@ -1,4 +1,5 @@
 """Public catalogue intents — no JWT required, filters honoured."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -27,18 +28,14 @@ def retriever():
 
 @pytest.fixture
 def patch_version_ok():
-    with patch(
-        "app.capabilities.support.service.check_version_authority"
-    ) as m:
+    with patch("app.capabilities.support.service.check_version_authority") as m:
         m.return_value = MagicMock(ok=True, local_version="abc123")
         yield m
 
 
 @pytest.fixture
 def patch_gateway():
-    with patch(
-        "app.capabilities.support.service._get_gateway"
-    ) as m:
+    with patch("app.capabilities.support.service._get_gateway") as m:
         g = MagicMock()
         g.generate_structured_sync.return_value = LLMAnswerOutput(
             answer_type=AnswerType.ANSWERED,
@@ -62,23 +59,27 @@ def test_deterministic_package_search_patterns():
 
 
 # Service — public intents must work without JWT
-def test_package_search_no_jwt(
-    retriever, patch_version_ok, patch_gateway
-):
+def test_package_search_no_jwt(retriever, patch_version_ok, patch_gateway):
     fake = {
-        "packages": [{
-            "packageCode": "PKG-922", "title": "Rishikesh Tours",
-            "destination": "India", "duration": "2 Days",
-            "price": 2000, "currency": "INR",
-            "agent": {"companyName": "Karan Tours"},
-        }],
+        "packages": [
+            {
+                "packageCode": "PKG-922",
+                "title": "Rishikesh Tours",
+                "destination": "India",
+                "duration": "2 Days",
+                "price": 2000,
+                "currency": "INR",
+                "agent": {"companyName": "Karan Tours"},
+            }
+        ],
         "total": 1,
     }
-    with patch(
-        "app.capabilities.support.service._get_resolver"
-    ) as rmock, patch(
-        "app.capabilities.support.service.fetch_for_intent",
-        return_value=("GET /api/packages", fake),
+    with (
+        patch("app.capabilities.support.service._get_resolver") as rmock,
+        patch(
+            "app.capabilities.support.service.fetch_for_intent",
+            return_value=("GET /api/packages", fake),
+        ),
     ):
         rmock.return_value.resolve.return_value = MagicMock(
             intent=LiveDataIntent.PACKAGE_SEARCH,
@@ -92,7 +93,7 @@ def test_package_search_no_jwt(
                 audience=Audience.CUSTOMER,
             ),
             retriever=retriever,
-            user_jwt=None,          # ← key assertion
+            user_jwt=None,  # ← key assertion
         )
     assert r.live_data_used is True
     assert r.live_data_sources == ["GET /api/packages"]
@@ -102,27 +103,27 @@ def test_package_search_no_jwt(
 def test_winter_package_search_returns_live_catalogue_and_discloses_limit(
     retriever, patch_version_ok, patch_gateway
 ):
-    question = (
-        "provide me available packages in swabi platform for winter "
-        "that i can book"
-    )
-    with patch(
-        "app.capabilities.support.service._get_resolver"
-    ) as rmock, patch(
-        "app.capabilities.support.service.fetch_for_intent",
-        return_value=(
-            "GET /api/packages",
-            {
-                "packages": [{
-                    "packageCode": "PKG-922",
-                    "title": "Rishikesh Tours",
-                    "destination": "India",
-                    "duration": "2 Days",
-                    "price": 2000,
-                    "currency": "INR",
-                }],
-                "total": 1,
-            },
+    question = "provide me available packages in swabi platform for winter that i can book"
+    with (
+        patch("app.capabilities.support.service._get_resolver") as rmock,
+        patch(
+            "app.capabilities.support.service.fetch_for_intent",
+            return_value=(
+                "GET /api/packages",
+                {
+                    "packages": [
+                        {
+                            "packageCode": "PKG-922",
+                            "title": "Rishikesh Tours",
+                            "destination": "India",
+                            "duration": "2 Days",
+                            "price": 2000,
+                            "currency": "INR",
+                        }
+                    ],
+                    "total": 1,
+                },
+            ),
         ),
     ):
         rmock.return_value.resolve.return_value = MagicMock(
@@ -154,25 +155,32 @@ def test_winter_package_search_returns_live_catalogue_and_discloses_limit(
     retriever.search.assert_not_called()
 
 
-def test_package_detail_no_jwt(
-    retriever, patch_version_ok, patch_gateway
-):
+def test_package_detail_no_jwt(retriever, patch_version_ok, patch_gateway):
     uuid = "17da203f-942d-4650-b9bb-b84a0d928aca"
-    fake = {"package": {
-        "id": uuid, "packageCode": "PKG-922",
-        "title": "Rishikesh Tours", "destination": "India",
-        "duration": "2 Days", "numberOfDays": 2,
-        "price": 2000, "basePrice": 3000,
-        "savingsPercent": 33, "currency": "INR",
-        "inclusions": ["Laxman Jhula"],
-        "activities": [], "agent": {"companyName": "Karan Tours"},
-        "isEscrowSafe": True,
-    }}
-    with patch(
-        "app.capabilities.support.service._get_resolver"
-    ) as rmock, patch(
-        "app.capabilities.support.service.fetch_for_intent",
-        return_value=("GET /api/packages/{id}", fake),
+    fake = {
+        "package": {
+            "id": uuid,
+            "packageCode": "PKG-922",
+            "title": "Rishikesh Tours",
+            "destination": "India",
+            "duration": "2 Days",
+            "numberOfDays": 2,
+            "price": 2000,
+            "basePrice": 3000,
+            "savingsPercent": 33,
+            "currency": "INR",
+            "inclusions": ["Laxman Jhula"],
+            "activities": [],
+            "agent": {"companyName": "Karan Tours"},
+            "isEscrowSafe": True,
+        }
+    }
+    with (
+        patch("app.capabilities.support.service._get_resolver") as rmock,
+        patch(
+            "app.capabilities.support.service.fetch_for_intent",
+            return_value=("GET /api/packages/{id}", fake),
+        ),
     ):
         rmock.return_value.resolve.return_value = MagicMock(
             intent=LiveDataIntent.PACKAGE_DETAIL,
@@ -197,23 +205,27 @@ def test_package_detail_no_jwt(
     patch_gateway.generate_structured_sync.assert_not_called()
 
 
-def test_activity_search_no_jwt(
-    retriever, patch_version_ok, patch_gateway
-):
+def test_activity_search_no_jwt(retriever, patch_version_ok, patch_gateway):
     fake = {
-        "activities": [{
-            "name": "Bungee Jumping", "category": "adventure",
-            "state": "Uttrakhand", "country": "India",
-            "price": "1500.00", "currency": "INR",
-            "durationHours": 6,
-        }],
+        "activities": [
+            {
+                "name": "Bungee Jumping",
+                "category": "adventure",
+                "state": "Uttrakhand",
+                "country": "India",
+                "price": "1500.00",
+                "currency": "INR",
+                "durationHours": 6,
+            }
+        ],
         "total": 1,
     }
-    with patch(
-        "app.capabilities.support.service._get_resolver"
-    ) as rmock, patch(
-        "app.capabilities.support.service.fetch_for_intent",
-        return_value=("GET /api/activities/public/list", fake),
+    with (
+        patch("app.capabilities.support.service._get_resolver") as rmock,
+        patch(
+            "app.capabilities.support.service.fetch_for_intent",
+            return_value=("GET /api/activities/public/list", fake),
+        ),
     ):
         rmock.return_value.resolve.return_value = MagicMock(
             intent=LiveDataIntent.ACTIVITY_SEARCH,
@@ -232,21 +244,25 @@ def test_activity_search_no_jwt(
     assert r.live_data_used is True
     assert r.live_data_sources == ["GET /api/activities/public/list"]
 
-def test_popular_destinations_no_jwt(
-    retriever, patch_version_ok, patch_gateway
-):
-    fake = {"destinations": [{
-        "destination": "Srinagar",
-        "total_enquiries": 21,
-        "avg_budget": "16380.95",
-        "unique_users": 5,
-        "completed_enquiries": 1,
-    }]}
-    with patch(
-        "app.capabilities.support.service._get_resolver"
-    ) as rmock, patch(
-        "app.capabilities.support.service.fetch_for_intent",
-        return_value=("GET /api/analytics/popular-destinations", fake),
+
+def test_popular_destinations_no_jwt(retriever, patch_version_ok, patch_gateway):
+    fake = {
+        "destinations": [
+            {
+                "destination": "Srinagar",
+                "total_enquiries": 21,
+                "avg_budget": "16380.95",
+                "unique_users": 5,
+                "completed_enquiries": 1,
+            }
+        ]
+    }
+    with (
+        patch("app.capabilities.support.service._get_resolver") as rmock,
+        patch(
+            "app.capabilities.support.service.fetch_for_intent",
+            return_value=("GET /api/analytics/popular-destinations", fake),
+        ),
     ):
         rmock.return_value.resolve.return_value = MagicMock(
             intent=LiveDataIntent.POPULAR_DESTINATIONS,
@@ -270,24 +286,32 @@ def test_popular_destinations_no_jwt(
     assert "21" in r.answer
     patch_gateway.generate_structured_sync.assert_not_called()
 
+
 def test_package_detail_formatter_produces_expected_shape():
     from app.capabilities.support.live_data_format import format_for_intent
 
     uuid = "17da203f-942d-4650-b9bb-b84a0d928aca"
-    payload = {"package": {
-        "id": uuid, "packageCode": "PKG-922",
-        "title": "Rishikesh Tours", "destination": "India",
-        "duration": "2 Days", "numberOfDays": 2,
-        "price": 2000, "basePrice": 3000,
-        "savingsPercent": 33, "currency": "INR",
-        "inclusions": ["Laxman Jhula", "Bungee Jumping"],
-        "activities": [
-            {"name": "Laxman Jhula"},
-            {"name": "Bungee Jumping"},
-        ],
-        "agent": {"companyName": "Karan Tours", "isVerified": True},
-        "isEscrowSafe": True,
-    }}
+    payload = {
+        "package": {
+            "id": uuid,
+            "packageCode": "PKG-922",
+            "title": "Rishikesh Tours",
+            "destination": "India",
+            "duration": "2 Days",
+            "numberOfDays": 2,
+            "price": 2000,
+            "basePrice": 3000,
+            "savingsPercent": 33,
+            "currency": "INR",
+            "inclusions": ["Laxman Jhula", "Bungee Jumping"],
+            "activities": [
+                {"name": "Laxman Jhula"},
+                {"name": "Bungee Jumping"},
+            ],
+            "agent": {"companyName": "Karan Tours", "isVerified": True},
+            "isEscrowSafe": True,
+        }
+    }
     out = format_for_intent(LiveDataIntent.PACKAGE_DETAIL, payload)
     assert "PKG-922" in out
     assert "Rishikesh Tours" in out

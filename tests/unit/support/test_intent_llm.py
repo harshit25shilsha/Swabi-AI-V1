@@ -1,4 +1,5 @@
 """LLM intent classifier — gateway is mocked."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -13,9 +14,7 @@ from app.core.exceptions import AIProviderError
 
 
 def _result(intent, confidence=0.9, entities=None):
-    return LLMIntentResult(
-        intent=intent, confidence=confidence, entities=entities or {}
-    )
+    return LLMIntentResult(intent=intent, confidence=confidence, entities=entities or {})
 
 
 def _classifier(response=None, raises=None):
@@ -53,6 +52,7 @@ def test_provider_error_returns_none():
 
 def test_validation_error_returns_none():
     from app.core.exceptions import AIValidationError
+
     c = _classifier(raises=AIValidationError("bad json"))
     assert c.classify("anything", "customer") is None
 

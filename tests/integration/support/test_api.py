@@ -1,4 +1,5 @@
 """Route tests: user JWT in Authorization is the only credential."""
+
 from __future__ import annotations
 
 from unittest.mock import patch

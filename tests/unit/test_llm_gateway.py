@@ -82,10 +82,12 @@ def test_token_estimate_includes_completion_budget():
 def test_groq_response_preserves_finish_reason():
     response = GroqProvider._parse_response(
         {
-            "choices": [{
-                "message": {"content": '{"name": "Swabi"'},
-                "finish_reason": "length",
-            }],
+            "choices": [
+                {
+                    "message": {"content": '{"name": "Swabi"'},
+                    "finish_reason": "length",
+                }
+            ],
             "model": "test-model",
         },
         "fallback-model",
@@ -257,7 +259,7 @@ def test_sync_structured_output_keeps_budget_for_non_truncation_error():
     )
 
     assert output.age == 1
-    assert [
-        call.kwargs["max_tokens"]
-        for call in provider.generate_sync.call_args_list
-    ] == [512, 512]
+    assert [call.kwargs["max_tokens"] for call in provider.generate_sync.call_args_list] == [
+        512,
+        512,
+    ]

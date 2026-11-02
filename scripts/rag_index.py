@@ -12,6 +12,7 @@ Idempotent: rerunning against the same version upserts the same points
     python scripts/rag_index.py --dry-run
     python scripts/rag_index.py --allow-non-release # development only
 """
+
 from __future__ import annotations
 
 import argparse
@@ -35,11 +36,15 @@ DEFAULT_INDEX = Path("data/rag_index")
 def _args(argv=None):
     p = argparse.ArgumentParser()
     p.add_argument("--index", type=Path, default=DEFAULT_INDEX)
-    p.add_argument("--version", type=str, default=None,
-                   help="version dir under versions/; default = CURRENT")
+    p.add_argument(
+        "--version", type=str, default=None, help="version dir under versions/; default = CURRENT"
+    )
     p.add_argument("--dry-run", action="store_true")
-    p.add_argument("--allow-non-release", action="store_true",
-                   help="index a non-release artifact (development only)")
+    p.add_argument(
+        "--allow-non-release",
+        action="store_true",
+        help="index a non-release artifact (development only)",
+    )
     return p.parse_args(argv)
 
 
@@ -49,8 +54,7 @@ def _resolve_version(index_root: Path, explicit: str | None) -> str:
     current = index_root / "CURRENT"
     if not current.exists():
         raise SystemExit(
-            f"no CURRENT file under {index_root}; run ingestion first "
-            "or pass --version"
+            f"no CURRENT file under {index_root}; run ingestion first or pass --version"
         )
     return current.read_text(encoding="utf-8").strip()
 
@@ -75,9 +79,7 @@ def main(argv=None) -> int:
     if not version_dir.exists():
         raise SystemExit(f"version directory not found: {version_dir}")
 
-    manifest = json.loads(
-        (version_dir / "index_version.json").read_text(encoding="utf-8")
-    )
+    manifest = json.loads((version_dir / "index_version.json").read_text(encoding="utf-8"))
     release = bool(manifest.get("release", False))
     if not release and not args.allow_non_release:
         print(
@@ -92,10 +94,8 @@ def main(argv=None) -> int:
         raise SystemExit("no chunks to index")
 
     print(f"version={version} chunks={len(chunks)} release={release}")
-    print(f"embedding_model={settings.rag_embedding_model} "
-          f"dim={settings.rag_embedding_dim}")
-    print(f"qdrant={settings.qdrant_url} "
-          f"collection={settings.qdrant_collection}")
+    print(f"embedding_model={settings.rag_embedding_model} dim={settings.rag_embedding_dim}")
+    print(f"qdrant={settings.qdrant_url} collection={settings.qdrant_collection}")
 
     if args.dry_run:
         print("[dry-run] no writes")
@@ -112,8 +112,7 @@ def main(argv=None) -> int:
     # -- Store -------------------------------------------------------------
     store = QdrantStore()
     if not store.ping():
-        print(f"[error] cannot reach Qdrant at {settings.qdrant_url}",
-              file=sys.stderr)
+        print(f"[error] cannot reach Qdrant at {settings.qdrant_url}", file=sys.stderr)
         return 1
 
     try:
@@ -135,8 +134,7 @@ def main(argv=None) -> int:
     store.point_alias_at(version)
 
     print(f"[ok] indexed {written} points to {store.versioned_name(version)}")
-    print(f"[ok] alias {store.alias_name()} -> "
-          f"{store.versioned_name(version)}")
+    print(f"[ok] alias {store.alias_name()} -> {store.versioned_name(version)}")
     return 0
 
 

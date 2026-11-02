@@ -1,4 +1,5 @@
 """Knowledge index version authority checks."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -49,9 +50,7 @@ def test_version_authority_fails_closed_when_qdrant_is_unavailable(tmp_path):
     current = tmp_path / "CURRENT"
     current.write_text("abc123", encoding="utf-8")
     store = MagicMock()
-    store.current_versioned_collection.side_effect = QdrantStoreError(
-        "connection failed"
-    )
+    store.current_versioned_collection.side_effect = QdrantStoreError("connection failed")
 
     status = check_version_authority(current_file=current, store=store)
 

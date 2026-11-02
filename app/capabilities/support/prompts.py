@@ -12,6 +12,7 @@ The prompt also forbids personal financial commitments. Policy
 descriptions are allowed; promises ("you will get a refund of ₹X") are
 not.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -119,6 +120,6 @@ Examples of correct behaviour:
   Output: {"answer_type":"answered","answer":"Post an enquiry with your trip details. Review the bids vendors send, chat or negotiate if needed, then accept your preferred bid to create the booking and start payment.","citation_chunk_ids":["<workflow chunk>"],"confidence":0.95}
 """
 
-SUPPORT_PROMPT_VERSION = "support_" + hashlib.sha256(
-    SUPPORT_SYSTEM_PROMPT.encode("utf-8")
-).hexdigest()[:8]
+SUPPORT_PROMPT_VERSION = (
+    "support_" + hashlib.sha256(SUPPORT_SYSTEM_PROMPT.encode("utf-8")).hexdigest()[:8]
+)

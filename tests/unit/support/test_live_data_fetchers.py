@@ -1,4 +1,5 @@
 """Fetcher tests. httpx.Client is mocked; no network, no real backend."""
+
 from __future__ import annotations
 
 import httpx
@@ -11,6 +12,7 @@ from app.capabilities.support.live_data_classifier import LiveDataIntent
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 class _FakeResponse:
     def __init__(self, status_code: int, body, *, text: str = "") -> None:
@@ -44,16 +46,12 @@ def _mock_httpx(
 
         def get(self, url, headers=None, params=None):
             if record is not None:
-                record.append(
-                    {"url": url, "headers": headers, "params": params}
-                )
+                record.append({"url": url, "headers": headers, "params": params})
             if raises is not None:
                 raise raises
             return _FakeResponse(status_code, body or {})
 
-    monkeypatch.setattr(
-        "app.capabilities.support.live_data.httpx.Client", FakeClient
-    )
+    monkeypatch.setattr("app.capabilities.support.live_data.httpx.Client", FakeClient)
 
 
 def _jwt() -> str:
@@ -63,6 +61,7 @@ def _jwt() -> str:
 # ---------------------------------------------------------------------------
 # Customer fetchers
 # ---------------------------------------------------------------------------
+
 
 def test_fetch_my_bookings(monkeypatch):
     record: list = []
@@ -155,6 +154,7 @@ def test_fetch_my_enquiries(monkeypatch):
 # Vendor fetchers
 # ---------------------------------------------------------------------------
 
+
 def test_fetch_vendor_wallet(monkeypatch):
     _mock_httpx(
         monkeypatch,
@@ -192,7 +192,11 @@ def test_fetch_vendor_inquiries(monkeypatch):
                 "inquiries": [{"id": "i1"}],
                 "total": 1,
                 "stats": {
-                    "new": 1, "bid_placed": 0, "won": 0, "lost": 0, "all": 1,
+                    "new": 1,
+                    "bid_placed": 0,
+                    "won": 0,
+                    "lost": 0,
+                    "all": 1,
                 },
             },
         },
@@ -241,6 +245,7 @@ def test_fetch_vendor_subscription_null(monkeypatch):
 # Error handling
 # ---------------------------------------------------------------------------
 
+
 def test_fetch_raises_on_success_false(monkeypatch):
     _mock_httpx(
         monkeypatch,
@@ -282,9 +287,7 @@ def test_fetch_retries_timeout_and_succeeds(monkeypatch):
                 {"success": True, "data": {"bookings": [], "total": 0}},
             )
 
-    monkeypatch.setattr(
-        "app.capabilities.support.live_data.httpx.Client", FakeClient
-    )
+    monkeypatch.setattr("app.capabilities.support.live_data.httpx.Client", FakeClient)
     monkeypatch.setattr("app.capabilities.support.live_data.time.sleep", lambda _: None)
 
     result = live_data.fetch_my_bookings(_jwt())
@@ -311,9 +314,7 @@ def test_fetch_raises_after_timeout_retry_exhausted(monkeypatch):
             calls += 1
             raise httpx.ReadTimeout("backend still slow")
 
-    monkeypatch.setattr(
-        "app.capabilities.support.live_data.httpx.Client", FakeClient
-    )
+    monkeypatch.setattr("app.capabilities.support.live_data.httpx.Client", FakeClient)
     monkeypatch.setattr("app.capabilities.support.live_data.time.sleep", lambda _: None)
 
     with pytest.raises(LiveDataFetchError, match="timeout"):
@@ -355,18 +356,15 @@ def test_fetch_raises_on_http_401(monkeypatch):
 # Dispatcher
 # ---------------------------------------------------------------------------
 
+
 def test_fetch_for_intent_requires_jwt():
     with pytest.raises(LiveDataFetchError, match="JWT"):
-        live_data.fetch_for_intent(
-            LiveDataIntent.MY_BOOKINGS, user_jwt=None
-        )
+        live_data.fetch_for_intent(LiveDataIntent.MY_BOOKINGS, user_jwt=None)
 
 
 def test_fetch_for_intent_unknown_intent():
     with pytest.raises(LiveDataFetchError, match="no fetcher"):
-        live_data.fetch_for_intent(
-            LiveDataIntent.NONE, user_jwt="x"
-        )
+        live_data.fetch_for_intent(LiveDataIntent.NONE, user_jwt="x")
 
 
 def test_fetch_for_intent_dispatch(monkeypatch):
@@ -374,9 +372,7 @@ def test_fetch_for_intent_dispatch(monkeypatch):
         monkeypatch,
         body={"success": True, "data": {"bookings": [], "total": 0}},
     )
-    label, payload = live_data.fetch_for_intent(
-        LiveDataIntent.MY_BOOKINGS, user_jwt=_jwt()
-    )
+    label, payload = live_data.fetch_for_intent(LiveDataIntent.MY_BOOKINGS, user_jwt=_jwt())
     assert label == "GET /api/bookings/my"
     assert payload["total"] == 0
 
@@ -542,9 +538,7 @@ def test_fetch_latest_enquiry_bids_handles_no_enquiries(monkeypatch):
         (LiveDataIntent.MY_PAYMENTS, "complete"),
     ],
 )
-def test_fetch_for_intent_normalizes_status_aliases(
-    monkeypatch, intent, status
-):
+def test_fetch_for_intent_normalizes_status_aliases(monkeypatch, intent, status):
     record: list = []
     _mock_httpx(
         monkeypatch,
@@ -558,8 +552,5 @@ def test_fetch_for_intent_normalizes_status_aliases(
         entities={"status": status},
     )
 
-    expected = (
-        "cancelled" if status in {"cancel", "canceled", "cancelled"}
-        else "completed"
-    )
+    expected = "cancelled" if status in {"cancel", "canceled", "cancelled"} else "completed"
     assert record[0]["params"]["status"] == expected

@@ -1,4 +1,5 @@
 """Config loader + validator tests."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -30,9 +31,7 @@ def test_null_hash_rejected_for_release():
 
 def test_policy_metadata_required_for_release():
     cfg = load_config(FIXTURES / "minimal.yaml")
-    cfg["source_hash_expected"] = sha256_of(
-        (FIXTURES / "minimal.md").read_text(encoding="utf-8")
-    )
+    cfg["source_hash_expected"] = sha256_of((FIXTURES / "minimal.md").read_text(encoding="utf-8"))
     del cfg["sections"][0]["policy_lifecycle"]
     with pytest.raises(ConfigError, match="requires policy_lifecycle"):
         validate_config(cfg, release=True)
@@ -94,9 +93,7 @@ def test_categories_must_be_classified_exactly_once():
 
 def test_draft_policy_blocks_release(tmp_path):
     cfg = load_config(FIXTURES / "minimal.yaml")
-    cfg["source_hash_expected"] = sha256_of(
-        (FIXTURES / "minimal.md").read_text(encoding="utf-8")
-    )
+    cfg["source_hash_expected"] = sha256_of((FIXTURES / "minimal.md").read_text(encoding="utf-8"))
     cfg["sections"][0]["policy_lifecycle"]["status"] = "draft"
     with pytest.raises(ConfigError, match="not approved"):
         validate_config(cfg, release=True)
@@ -106,9 +103,7 @@ def test_expired_policy_blocks_release():
     from datetime import UTC, datetime, timedelta
 
     cfg = load_config(FIXTURES / "minimal.yaml")
-    cfg["source_hash_expected"] = sha256_of(
-        (FIXTURES / "minimal.md").read_text(encoding="utf-8")
-    )
+    cfg["source_hash_expected"] = sha256_of((FIXTURES / "minimal.md").read_text(encoding="utf-8"))
     today = datetime.now(UTC).date()
     lifecycle = cfg["sections"][0]["policy_lifecycle"]
     lifecycle["effective_from"] = (today - timedelta(days=3)).isoformat()
@@ -121,9 +116,7 @@ def test_future_policy_blocks_release():
     from datetime import UTC, datetime, timedelta
 
     cfg = load_config(FIXTURES / "minimal.yaml")
-    cfg["source_hash_expected"] = sha256_of(
-        (FIXTURES / "minimal.md").read_text(encoding="utf-8")
-    )
+    cfg["source_hash_expected"] = sha256_of((FIXTURES / "minimal.md").read_text(encoding="utf-8"))
     tomorrow = (datetime.now(UTC).date() + timedelta(days=1)).isoformat()
     cfg["sections"][0]["policy_lifecycle"]["effective_from"] = tomorrow
     with pytest.raises(ConfigError, match="not effective yet"):
@@ -132,9 +125,7 @@ def test_future_policy_blocks_release():
 
 def test_release_accepts_explicit_supersession():
     cfg = load_config(FIXTURES / "minimal.yaml")
-    cfg["source_hash_expected"] = sha256_of(
-        (FIXTURES / "minimal.md").read_text(encoding="utf-8")
-    )
+    cfg["source_hash_expected"] = sha256_of((FIXTURES / "minimal.md").read_text(encoding="utf-8"))
     cfg["sections"][0]["policy_lifecycle"]["status"] = "withdrawn"
     cfg["sections"][1]["policy_lifecycle"]["supersedes"] = ["alpha-policy"]
     validate_config(cfg, release=True)

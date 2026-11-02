@@ -8,6 +8,7 @@ The classifier identifies the user's goal; it does not authorize access
 or call APIs. The support service checks audience and authentication,
 then dispatches only to explicitly implemented fetchers.
 """
+
 from __future__ import annotations
 
 import logging

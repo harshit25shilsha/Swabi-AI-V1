@@ -23,9 +23,7 @@ _MAX_STRUCTURED_COMPLETION_TOKENS = 4096
 def _increase_completion_budget(kwargs: dict[str, object]) -> dict[str, object]:
     retry_kwargs = dict(kwargs)
     budget_key = (
-        "max_completion_tokens"
-        if "max_completion_tokens" in retry_kwargs
-        else "max_tokens"
+        "max_completion_tokens" if "max_completion_tokens" in retry_kwargs else "max_tokens"
     )
     try:
         current = int(retry_kwargs.get(budget_key, settings.llm_max_tokens))
@@ -106,19 +104,15 @@ class LLMGateway:
             except ValidationError as exc:
                 last_error = exc
                 if response.metadata.get("finish_reason") == "length":
-                    retry_kwargs = _increase_completion_budget(
-                        request_kwargs
-                    )
+                    retry_kwargs = _increase_completion_budget(request_kwargs)
                     if retry_kwargs == request_kwargs:
                         log.warning(
-                            "Structured output remained truncated at the "
-                            "maximum completion budget"
+                            "Structured output remained truncated at the maximum completion budget"
                         )
                         break
                     request_kwargs = retry_kwargs
                     log.info(
-                        "Retrying truncated structured output with "
-                        "max_tokens=%s",
+                        "Retrying truncated structured output with max_tokens=%s",
                         request_kwargs.get(
                             "max_completion_tokens",
                             request_kwargs.get("max_tokens"),
@@ -165,19 +159,15 @@ class LLMGateway:
             except ValidationError as exc:
                 last_error = exc
                 if response.metadata.get("finish_reason") == "length":
-                    retry_kwargs = _increase_completion_budget(
-                        request_kwargs
-                    )
+                    retry_kwargs = _increase_completion_budget(request_kwargs)
                     if retry_kwargs == request_kwargs:
                         log.warning(
-                            "Structured output remained truncated at the "
-                            "maximum completion budget"
+                            "Structured output remained truncated at the maximum completion budget"
                         )
                         break
                     request_kwargs = retry_kwargs
                     log.info(
-                        "Retrying truncated structured output with "
-                        "max_tokens=%s",
+                        "Retrying truncated structured output with max_tokens=%s",
                         request_kwargs.get(
                             "max_completion_tokens",
                             request_kwargs.get("max_tokens"),

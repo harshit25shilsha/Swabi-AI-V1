@@ -11,6 +11,7 @@ import pytest
 from app.rag.qdrant_store import (
     QdrantStore,
     QdrantStoreError,
+    _bm25_cache,
     _current_content_filter,
     _payload,
     _point_id,
@@ -267,6 +268,95 @@ def test_keyword_search_pins_version_without_resolving_alias():
     assert result == []
     client.get_aliases.assert_not_called()
     assert client.scroll.call_args.kwargs["collection_name"] == "c_pinned_vversion-1"
+
+def test_warm_keyword_index_is_reused_by_live_keyword_search():
+    store = QdrantStore(collection="c_warm_reuse")
+    client = MagicMock()
+
+    client.scroll.return_value = (
+        [
+            MagicMock(
+                payload={
+                    "chunk_id": "refund",
+                    "section_id": "1.1",
+                    "section_path": "Refund policy",
+                    "text": "Refunds are available after cancellation.",
+                }
+            ),
+        ],
+        None,
+    )
+
+    with patch.object(store, "_get_client", return_value=client):
+        warmed = store.warm_keyword_index(
+            audience="customer",
+            area="swabi",
+            index_version="v1",
+        )
+
+        assert warmed is True
+        assert client.scroll.call_count == 1
+
+        results = store.keyword_search(
+            "refund cancellation",
+            audience="customer",
+            area="swabi",
+            index_version="v1",
+        )
+
+    assert results
+    assert results[0].chunk_id == "refund"
+
+    # The live request must reuse the startup-built index.
+    assert client.scroll.call_count == 1
+
+
+def test_both_scope_reuses_none_scope_cache_entry():
+    store = QdrantStore(collection="c_warm_normalized")
+    client = MagicMock()
+
+    client.scroll.return_value = (
+        [
+            MagicMock(
+                payload={
+                    "chunk_id": "general",
+                    "section_id": "1.1",
+                    "section_path": "General guidance",
+                    "text": "General travel and booking guidance.",
+                }
+            ),
+        ],
+        None,
+    )
+
+    with patch.object(store, "_get_client", return_value=client):
+        store.warm_keyword_index(
+            audience="both",
+            area="both",
+            index_version="v1",
+        )
+
+        # "both" and None have equivalent retrieval filters.
+        store.keyword_search(
+            "travel booking",
+            audience=None,
+            area=None,
+            index_version="v1",
+        )
+
+    assert client.scroll.call_count == 1
+
+
+def test_warm_keyword_index_requires_pinned_version():
+    store = QdrantStore(collection="c_warm_requires_version")
+
+    with pytest.raises(ValueError, match="index_version is required"):
+        store.warm_keyword_index(
+            audience="customer",
+            area="swabi",
+            index_version="",
+        )
+
 
 
 def test_dense_search_pins_versioned_collection():

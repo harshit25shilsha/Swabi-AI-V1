@@ -1,4 +1,5 @@
 """Public contract lock: 12 fields now (was 9)."""
+
 from __future__ import annotations
 
 from unittest.mock import patch
@@ -17,7 +18,8 @@ client = TestClient(app)
 
 def _empty() -> SupportAskResponse:
     return SupportAskResponse(
-        answer="", answer_type=AnswerType.INSUFFICIENT_CONTEXT,
+        answer="",
+        answer_type=AnswerType.INSUFFICIENT_CONTEXT,
         knowledge_version="",
     )
 
@@ -31,10 +33,18 @@ def test_response_field_set_locked(monkeypatch):
             json={"question": "hi", "audience": "customer"},
         )
     expected = {
-        "answer", "answer_type", "citations", "confidence",
-        "retrieval_mode_used", "knowledge_version",
-        "request_id", "provider", "prompt_version",
-        "live_data_used", "live_data_sources", "live_data_warning",
+        "answer",
+        "answer_type",
+        "citations",
+        "confidence",
+        "retrieval_mode_used",
+        "knowledge_version",
+        "request_id",
+        "provider",
+        "prompt_version",
+        "live_data_used",
+        "live_data_sources",
+        "live_data_warning",
     }
     assert set(r.json().keys()) == expected
 

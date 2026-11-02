@@ -1,4 +1,5 @@
 """Support schemas — validation boundaries."""
+
 from __future__ import annotations
 
 import pytest
@@ -45,19 +46,15 @@ def test_request_audience_rejects_admin():
 
 
 def test_response_confidence_bounds():
-    SupportAskResponse(answer="a", answer_type=AnswerType.ANSWERED,
-                       confidence=0.0)
-    SupportAskResponse(answer="a", answer_type=AnswerType.ANSWERED,
-                       confidence=1.0)
+    SupportAskResponse(answer="a", answer_type=AnswerType.ANSWERED, confidence=0.0)
+    SupportAskResponse(answer="a", answer_type=AnswerType.ANSWERED, confidence=1.0)
     with pytest.raises(ValidationError):
-        SupportAskResponse(answer="a", answer_type=AnswerType.ANSWERED,
-                           confidence=1.5)
+        SupportAskResponse(answer="a", answer_type=AnswerType.ANSWERED, confidence=1.5)
 
 
 def test_citation_snippet_length_capped():
     with pytest.raises(ValidationError):
-        Citation(chunk_id="c", section_id="s", section_path="p",
-                 snippet="x" * 301)
+        Citation(chunk_id="c", section_id="s", section_path="p", snippet="x" * 301)
 
 
 def test_llm_output_shape():

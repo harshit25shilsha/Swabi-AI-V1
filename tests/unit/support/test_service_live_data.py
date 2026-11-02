@@ -1,4 +1,5 @@
 """Service wiring with live data, end-to-end (LLM and retriever mocked)."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -44,9 +45,7 @@ def patch_gateway(gateway_answered):
 
 @pytest.fixture
 def patch_version_ok():
-    with patch(
-        "app.capabilities.support.service.check_version_authority"
-    ) as m:
+    with patch("app.capabilities.support.service.check_version_authority") as m:
         v = MagicMock(ok=True, local_version="abc123")
         m.return_value = v
         yield m
@@ -55,6 +54,7 @@ def patch_version_ok():
 # ---------------------------------------------------------------------------
 # Audience mismatch -> needs_live_data, no fetch
 # ---------------------------------------------------------------------------
+
 
 def test_customer_asking_vendor_scope(retriever, patch_version_ok):
     r = ask(
@@ -81,10 +81,10 @@ def test_vendor_asking_customer_scope(retriever, patch_version_ok):
     assert r.answer_type == AnswerType.NEEDS_LIVE_DATA
 
 
-
 # ---------------------------------------------------------------------------
 # No JWT -> needs_live_data, no fetch
 # ---------------------------------------------------------------------------
+
 
 def test_live_intent_without_jwt_returns_needs_live(retriever, patch_version_ok):
     r = ask(
@@ -103,17 +103,21 @@ def test_live_intent_without_jwt_returns_needs_live(retriever, patch_version_ok)
 # Successful fetch -> live data in answer, correct fields
 # ---------------------------------------------------------------------------
 
-def test_fetch_success_marks_live_data_used(
-    retriever, patch_version_ok, patch_gateway
-):
+
+def test_fetch_success_marks_live_data_used(retriever, patch_version_ok, patch_gateway):
     fake_payload = {
-        "bookings": [{
-            "bookingCode": "BK-1", "metadata": {"destination": "Goa"},
-            "startDate": "2026-11-01T00:00:00Z",
-            "endDate": "2026-11-03T00:00:00Z",
-            "amount": "5000", "currency": "INR",
-            "status": "upcoming", "paymentStatus": "paid",
-        }],
+        "bookings": [
+            {
+                "bookingCode": "BK-1",
+                "metadata": {"destination": "Goa"},
+                "startDate": "2026-11-01T00:00:00Z",
+                "endDate": "2026-11-03T00:00:00Z",
+                "amount": "5000",
+                "currency": "INR",
+                "status": "upcoming",
+                "paymentStatus": "paid",
+            }
+        ],
         "total": 1,
     }
     with patch(
@@ -134,9 +138,7 @@ def test_fetch_success_marks_live_data_used(
     assert r.answer_type == AnswerType.ANSWERED
 
 
-def test_wallet_balance_uses_live_data_without_rag(
-    retriever, patch_version_ok, patch_gateway
-):
+def test_wallet_balance_uses_live_data_without_rag(retriever, patch_version_ok, patch_gateway):
     with patch(
         "app.capabilities.support.service.fetch_for_intent",
         return_value=(
@@ -169,8 +171,10 @@ def test_wallet_balance_uses_live_data_without_rag(
 # Fetch failure -> needs_live_data with clear message
 # ---------------------------------------------------------------------------
 
+
 def test_fetch_failure_returns_needs_live(retriever, patch_version_ok):
     from app.capabilities.support.live_data import LiveDataFetchError
+
     with patch(
         "app.capabilities.support.service.fetch_for_intent",
         side_effect=LiveDataFetchError("timeout"),
@@ -191,13 +195,15 @@ def test_fetch_failure_returns_needs_live(retriever, patch_version_ok):
 # Non-live question -> live_data_used stays False
 # ---------------------------------------------------------------------------
 
-def test_policy_question_no_live_data(
-    retriever, patch_version_ok, patch_gateway
-):
+
+def test_policy_question_no_live_data(retriever, patch_version_ok, patch_gateway):
     retriever.search.return_value = [
         RetrievedChunk(
-            chunk_id="c1", section_id="4.1", section_path="p",
-            text="Cancel policy", score=0.8,
+            chunk_id="c1",
+            section_id="4.1",
+            section_path="p",
+            text="Cancel policy",
+            score=0.8,
         ),
     ]
     # Answer must cite a retrieved chunk
@@ -217,6 +223,7 @@ def test_policy_question_no_live_data(
     )
     assert r.live_data_used is False
     assert r.live_data_sources == []
+
 
 def test_booking_detail_uses_live_data_without_rag_chunks(
     retriever, patch_version_ok, patch_gateway

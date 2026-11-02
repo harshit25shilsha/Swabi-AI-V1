@@ -3,11 +3,14 @@
 Wraps EmbeddingModel + QdrantStore into a single entry point for the
 support service. Qdrant applies audience, area, and policy-date filters to
 both result sets before Reciprocal Rank Fusion combines their rankings.
+
+Retrieval-stage timings are logged without recording query or document text.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from time import perf_counter
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -89,6 +92,9 @@ class RagRetriever:
         rrf_rank_constant: int = _RRF_RANK_CONSTANT,
         candidate_multiplier: int = _CANDIDATE_MULTIPLIER,
     ) -> list[RetrievedChunk]:
+        request_started = perf_counter()
+        timings: dict[str, float] = {}
+
         if rrf_rank_constant < 1:
             raise ValueError("rrf_rank_constant must be at least 1")
         if candidate_multiplier < 1:
@@ -96,17 +102,26 @@ class RagRetriever:
         if not query.strip():
             return []
 
+        # 1. Query embedding
+        stage_started = perf_counter()
         try:
             vectors = self.embedder.embed_queries([query])
         except EmbeddingError as exc:
+            timings["embedding_ms"] = round((perf_counter() - stage_started) * 1000, 2)
+            self._log_failure("embedding", request_started, timings, exc)
             raise RetrieverError(f"embedding failed: {exc}") from exc
         except Exception as exc:  # noqa: BLE001
+            timings["embedding_ms"] = round((perf_counter() - stage_started) * 1000, 2)
+            self._log_failure("embedding", request_started, timings, exc)
             raise RetrieverError(f"unexpected embedding error: {exc}") from exc
+        timings["embedding_ms"] = round((perf_counter() - stage_started) * 1000, 2)
 
         limit = max(top_k or settings.rag_top_k, 1)
         candidate_limit = limit * candidate_multiplier
         score_threshold = min_score if min_score is not None else settings.rag_min_score
 
+        # 2. Dense Qdrant search
+        stage_started = perf_counter()
         try:
             dense_results = (
                 self.store.search(
@@ -121,10 +136,17 @@ class RagRetriever:
                 else []
             )
         except QdrantStoreError as exc:
+            timings["dense_search_ms"] = round((perf_counter() - stage_started) * 1000, 2)
+            self._log_failure("dense_search", request_started, timings, exc)
             raise RetrieverError(f"qdrant search failed: {exc}") from exc
         except Exception as exc:  # noqa: BLE001
+            timings["dense_search_ms"] = round((perf_counter() - stage_started) * 1000, 2)
+            self._log_failure("dense_search", request_started, timings, exc)
             raise RetrieverError(f"unexpected retriever error: {exc}") from exc
+        timings["dense_search_ms"] = round((perf_counter() - stage_started) * 1000, 2)
 
+        # 3. BM25 keyword search
+        stage_started = perf_counter()
         try:
             keyword_results = self.store.keyword_search(
                 query,
@@ -134,20 +156,82 @@ class RagRetriever:
                 index_version=index_version,
             )
         except QdrantStoreError as exc:
+            timings["bm25_search_ms"] = round((perf_counter() - stage_started) * 1000, 2)
+            self._log_failure("bm25_search", request_started, timings, exc)
             raise RetrieverError(f"BM25 search failed: {exc}") from exc
         except Exception as exc:  # noqa: BLE001
+            timings["bm25_search_ms"] = round((perf_counter() - stage_started) * 1000, 2)
+            self._log_failure("bm25_search", request_started, timings, exc)
             raise RetrieverError(f"unexpected retriever error: {exc}") from exc
+        timings["bm25_search_ms"] = round((perf_counter() - stage_started) * 1000, 2)
 
+        # 4. Reciprocal Rank Fusion
+        stage_started = perf_counter()
         fused_results = reciprocal_rank_fusion(
             (dense_results, keyword_results),
             top_k=candidate_limit,
             rank_constant=rrf_rank_constant,
         )
+        timings["rrf_ms"] = round((perf_counter() - stage_started) * 1000, 2)
+
+        # 5. Optional reranking
         if self.reranker is None:
-            return fused_results[:limit]
-        try:
-            return self.reranker.rerank(query, fused_results, top_k=limit)
-        except RerankerError as exc:
-            raise RetrieverError(f"reranking failed: {exc}") from exc
-        except Exception as exc:  # noqa: BLE001
-            raise RetrieverError(f"unexpected reranker error: {exc}") from exc
+            results = fused_results[:limit]
+            timings["rerank_ms"] = 0.0
+        else:
+            stage_started = perf_counter()
+            try:
+                results = self.reranker.rerank(
+                    query,
+                    fused_results,
+                    top_k=limit,
+                )
+            except RerankerError as exc:
+                timings["rerank_ms"] = round((perf_counter() - stage_started) * 1000, 2)
+                self._log_failure("reranking", request_started, timings, exc)
+                raise RetrieverError(f"reranking failed: {exc}") from exc
+            except Exception as exc:  # noqa: BLE001
+                timings["rerank_ms"] = round((perf_counter() - stage_started) * 1000, 2)
+                self._log_failure("reranking", request_started, timings, exc)
+                raise RetrieverError(f"unexpected reranker error: {exc}") from exc
+            timings["rerank_ms"] = round((perf_counter() - stage_started) * 1000, 2)
+
+        total_ms = round((perf_counter() - request_started) * 1000, 2)
+
+        log.info(
+            "rag retrieval completed",
+            extra={
+                "event": "rag_retrieval_timing",
+                "audience": audience,
+                "area": area,
+                "index_version": index_version,
+                "reranker_enabled": self.reranker is not None,
+                "dense_result_count": len(dense_results),
+                "bm25_result_count": len(keyword_results),
+                "fused_result_count": len(fused_results),
+                "returned_result_count": len(results),
+                **timings,
+                "total_ms": total_ms,
+            },
+        )
+
+        return results
+
+    @staticmethod
+    def _log_failure(
+        stage: str,
+        request_started: float,
+        timings: dict[str, float],
+        exc: Exception,
+    ) -> None:
+        """Log a failed retrieval stage without exposing query/document text."""
+        log.warning(
+            "rag retrieval stage failed",
+            extra={
+                "event": "rag_retrieval_stage_failed",
+                "stage": stage,
+                "error_type": type(exc).__name__,
+                "total_elapsed_ms": round((perf_counter() - request_started) * 1000, 2),
+                **timings,
+            },
+        )

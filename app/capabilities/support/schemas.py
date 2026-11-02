@@ -1,4 +1,5 @@
 """Request, response, and internal LLM schemas."""
+
 from __future__ import annotations
 
 from enum import StrEnum
@@ -38,8 +39,7 @@ class SupportAskResponse(BaseModel):
     retrieval_mode_used: str = Field(
         default="not_applicable",
         description=(
-            "Knowledge retrieval mode, or not_applicable when no knowledge "
-            "retrieval ran."
+            "Knowledge retrieval mode, or not_applicable when no knowledge retrieval ran."
         ),
     )
     knowledge_version: str = ""
@@ -58,6 +58,7 @@ class LLMAnswerOutput(BaseModel):
     OUT_OF_SCOPE. NEEDS_LIVE_DATA is deterministic and never requested
     from the LLM.
     """
+
     answer_type: AnswerType
     answer: str
     citation_chunk_ids: list[str] = Field(default_factory=list, max_length=3)

@@ -114,8 +114,7 @@ def test_grounding_cli_loads_labeled_retrieval_dataset_and_judge_option():
 
     assert len(dataset.cases) == 15
     booking_case = next(
-        case for case in dataset.cases
-        if case.id == "package-booking-through-enquiry"
+        case for case in dataset.cases if case.id == "package-booking-through-enquiry"
     )
     assert booking_case.relevant_chunk_ids == [
         "47c29ba71be7e11c",
