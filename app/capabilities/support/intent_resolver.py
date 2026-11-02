@@ -111,6 +111,7 @@ class ResolvedIntent:
     entities: dict[str, Any] = field(default_factory=dict)
     source: str = "deterministic"  # "deterministic" | "llm" | "none"
     reason: str = ""
+    use_rag: bool = False
 
 
 class IntentResolver:
@@ -119,6 +120,8 @@ class IntentResolver:
 
     def resolve(self, question: str, audience: str) -> ResolvedIntent:
         det = classify_deterministic(question, audience)
+        knowledge_requested = is_general_process_question(question)
+        live_data_requested = is_live_data_question(question)
 
         # Deterministic returned NONE. Was it a scope block?
         if det.reason and "scope" in det.reason.lower():
@@ -132,7 +135,7 @@ class IntentResolver:
                 reason=det.reason,  # preserve for the service
             )
 
-        if is_general_process_question(question) and not is_live_data_question(question):
+        if knowledge_requested and not live_data_requested:
             return ResolvedIntent(
                 intent=LiveDataIntent.NONE,
                 source="none",
@@ -145,6 +148,7 @@ class IntentResolver:
                 entities=det.entities,
                 source="deterministic",
                 reason=det.reason,
+                use_rag=knowledge_requested,
             )
 
         direct_package_search = _DIRECT_PACKAGE_SEARCH.search(question) is not None
@@ -185,6 +189,7 @@ class IntentResolver:
                 entities=llm_result.entities,
                 source="llm",
                 reason=f"llm_conf={llm_result.confidence:.2f}",
+                use_rag=knowledge_requested,
             )
 
         if direct_package_search:

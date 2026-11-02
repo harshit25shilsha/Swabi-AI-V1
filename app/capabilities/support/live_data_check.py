@@ -36,6 +36,26 @@ _CURRENT_STATE_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"disputes?|withdrawals?|devices?|enquir(?:y|ies))\b",
         re.IGNORECASE,
     ),
+    re.compile(
+        r"\bhow\s+(?:can|do|should)\s+i\s+"
+        r"(?:check|view|see|find|get|track|show|list)\b"
+        r".{0,60}\bmy\s+"
+        r"(bookings?|trips?|bids?|payments?|orders?|wallet|escrow|"
+        r"disputes?|withdrawals?|devices?|enquir(?:y|ies))\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:check|view|show|get|see|find|tell\s+me)\b.{0,40}"
+        r"\b(?:status|history)\b.{0,40}\b(?:my\s+)?"
+        r"(booking|bid|order|payment|refund|dispute|withdrawal)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:check|view|show|get|see|find|tell\s+me)\b.{0,40}"
+        r"\bmy\s+(booking|bid|order|payment|refund|dispute|withdrawal)\b"
+        r".{0,20}\b(status|history|details?)\b",
+        re.IGNORECASE,
+    ),
     re.compile(r"\bmy\s+wallet\s+balance\b", re.IGNORECASE),
     re.compile(r"\bhow\s+much\s+did\s+i\s+pay\b", re.IGNORECASE),
     re.compile(
@@ -63,7 +83,8 @@ _PERSONAL_STATE_PATTERNS: tuple[re.Pattern[str], ...] = (
 _GENERAL_PROCESS_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
         r"\bwhat\s+(happens|should\s+i\s+do|can\s+i\s+do)\b"
-        r"|\bhow\s+do\s+i\b",
+        r"|\bhow\s+(?:can|do|should)\s+i\b"
+        r"|\bhow\s+to\b",
         re.IGNORECASE,
     ),
     re.compile(
@@ -87,17 +108,35 @@ _GENERAL_PROCESS_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
 )
 
+_KNOWLEDGE_TOPIC_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"\b(?:polic(?:y|ies)|rules?|guidelines?|terms|conditions|"
+        r"procedures?|process|steps?|eligibility|commissions?|fees?)\b",
+        re.IGNORECASE,
+    ),
+)
+
+
+def _requests_current_state(question: str) -> bool:
+    return any(pattern.search(question) for pattern in _CURRENT_STATE_PATTERNS)
+
 
 def is_general_process_question(question: str) -> bool:
     """True for policy/how-to questions that can be answered from knowledge."""
-    return bool(question) and any(pattern.search(question) for pattern in _GENERAL_PROCESS_PATTERNS)
+    if not question:
+        return False
+    if any(pattern.search(question) for pattern in _KNOWLEDGE_TOPIC_PATTERNS):
+        return True
+    if _requests_current_state(question):
+        return False
+    return any(pattern.search(question) for pattern in _GENERAL_PROCESS_PATTERNS)
 
 
 def is_live_data_question(question: str) -> bool:
     """True when wording explicitly requests current, personal marketplace data."""
     if not question:
         return False
-    if any(pattern.search(question) for pattern in _CURRENT_STATE_PATTERNS):
+    if _requests_current_state(question):
         return True
     if is_general_process_question(question):
         return False

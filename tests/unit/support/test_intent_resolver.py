@@ -53,7 +53,41 @@ def test_knowledge_question_skips_llm():
     out = r.resolve("What is the cancellation policy?", "customer")
 
     assert out.intent == LiveDataIntent.NONE
-    assert out.reason == "not_live_intent_candidate"
+    assert out.reason == "general_process_question"
+    llm.classify.assert_not_called()
+
+
+def test_cancellation_instructions_are_not_routed_to_bookings_api():
+    r, llm = _resolver()
+
+    out = r.resolve("How can I cancel my booking and get a refund?", "customer")
+
+    assert out.intent == LiveDataIntent.NONE
+    assert out.reason == "general_process_question"
+    llm.classify.assert_not_called()
+
+
+def test_policy_and_booking_status_question_uses_both_sources():
+    r, llm = _resolver()
+
+    out = r.resolve(
+        "What is the cancellation policy and what is the status of my booking?",
+        "customer",
+    )
+
+    assert out.intent == LiveDataIntent.MY_BOOKINGS
+    assert out.use_rag is True
+    assert out.source == "deterministic"
+    llm.classify.assert_not_called()
+
+
+def test_how_to_check_booking_status_does_not_add_rag():
+    r, llm = _resolver()
+
+    out = r.resolve("How can I check my booking status?", "customer")
+
+    assert out.intent == LiveDataIntent.MY_BOOKINGS
+    assert out.use_rag is False
     llm.classify.assert_not_called()
 
 

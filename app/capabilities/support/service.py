@@ -3,10 +3,10 @@
 Pipeline:
     1. Resolve intent — deterministic classifier first, LLM fallback.
     2. Scope-mismatch guard -> needs_live_data with a specific message.
-    3. Live-data fetch (JWT-gated) -> live_text.
+    3. Live-data fetch (JWT-gated) -> live_text when requested.
     4. Unrecognized live-looking question -> needs_live_data fallback.
     5. Knowledge-version authority check (RAG only).
-    6. Dense retrieval over the alias -> candidate chunks.
+    6. Dense retrieval over the alias when knowledge context is requested.
     7. LLM answer generation (structured) -> LLMAnswerOutput.
     8. Validation:
          * every citation references a retrieved chunk
@@ -24,8 +24,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-
 import threading
+
 from app.capabilities.support.forbidden import (
     has_financial_promise,
     strip_forbidden_paths,
@@ -233,6 +233,7 @@ def _fallback(
     retrieval_mode_used: str = "not_applicable",
     live_data_used: bool = False,
     live_data_sources: list[str] | None = None,
+    live_data_warning: str | None = None,
 ) -> SupportAskResponse:
     return SupportAskResponse(
         answer=answer,
@@ -245,7 +246,7 @@ def _fallback(
         prompt_version=SUPPORT_PROMPT_VERSION,
         live_data_used=live_data_used,
         live_data_sources=live_data_sources or [],
-        live_data_warning=None,
+        live_data_warning=live_data_warning,
     )
 
 
@@ -322,11 +323,13 @@ def ask(
     live_text: str | None = None
     live_data_used = False
     live_data_sources: list[str] = []
+    live_data_warning: str | None = None
 
     # ------------------------------------------------------------------
     # 1. Resolve intent — deterministic first, LLM fallback.
     # ------------------------------------------------------------------
     resolved = _get_resolver().resolve(request.question, audience)
+    use_rag = resolved.use_rag is True
 
     # Recognized live-data intents whose backend integration is not wired yet.
     if resolved.intent in _NOT_YET_IMPLEMENTED:
@@ -379,81 +382,91 @@ def ask(
         if resolved.intent in VENDOR_ONLY and audience != "vendor":
             return _scope_mismatch(requested=resolved.intent, audience=audience)
 
-        # JWT gate - public intents need no auth.
+        # A mixed request can still use RAG when the user is not signed in.
         if resolved.intent not in _PUBLIC_INTENTS and not user_jwt:
-            return _fallback(
-                answer=_SIGN_IN_MESSAGE,
-                answer_type=AnswerType.NEEDS_LIVE_DATA,
-                knowledge_version="",
-            )
-
-        # Fetch.
-        try:
-            endpoint_label, payload = fetch_for_intent(
-                resolved.intent,
-                user_jwt=user_jwt,
-                entities=resolved.entities,
-            )
-            live_text = format_for_intent(resolved.intent, payload)
-            if (
-                resolved.intent == LiveDataIntent.PACKAGE_SEARCH
-                and _UNSUPPORTED_PACKAGE_FILTER_REQUEST.search(request.question)
-            ):
-                live_text += (
-                    "\nI can't check that condition in the catalogue right "
-                    "now; it only lets me filter packages by destination. "
-                    "Please confirm the requested season, dates, budget, or "
-                    "group size with the package provider before booking."
+            if not use_rag:
+                return _fallback(
+                    answer=_SIGN_IN_MESSAGE,
+                    answer_type=AnswerType.NEEDS_LIVE_DATA,
+                    knowledge_version="",
                 )
-            live_data_used = True
-            live_data_sources = [endpoint_label]
-            log.info(
-                "support_live_data_fetched",
-                extra={
-                    "q_hash": q_hash,
-                    "intent": resolved.intent.value,
-                    "endpoint": endpoint_label,
-                    "source": resolved.source,
-                },
+            live_data_warning = (
+                "Sign in to retrieve your live account information. "
+                "The answer below uses knowledge-base information only."
             )
-            log.info(
-                "support_answered",
-                extra={
-                    "q_hash": q_hash,
-                    "audience": audience,
-                    "answer_type": AnswerType.ANSWERED.value,
-                    "citations": 0,
-                    "chunks": 0,
-                    "top_score": 0.0,
-                    "live_data_used": True,
-                    "intent": resolved.intent.value,
-                    "intent_source": resolved.source,
-                    "prompt_version": SUPPORT_PROMPT_VERSION,
-                    "answer_source": "live_api_formatter",
-                },
-            )
-            return _live_data_response(
-                answer=live_text,
-                endpoint_label=endpoint_label,
-                knowledge_version="",
-            )
-        except LiveDataFetchError as exc:
-            log.warning(
-                "support_live_data_failed",
-                extra={
-                    "q_hash": q_hash,
-                    "intent": resolved.intent.value,
-                    "error": str(exc),
-                },
-            )
-            return _fallback(
-                answer=(
-                    "I couldn't retrieve your live information right now. "
-                    "Please try again or check the app directly."
-                ),
-                answer_type=AnswerType.NEEDS_LIVE_DATA,
-                knowledge_version="",
-            )
+        else:
+            try:
+                endpoint_label, payload = fetch_for_intent(
+                    resolved.intent,
+                    user_jwt=user_jwt,
+                    entities=resolved.entities,
+                )
+                live_text = format_for_intent(resolved.intent, payload)
+                if (
+                    resolved.intent == LiveDataIntent.PACKAGE_SEARCH
+                    and _UNSUPPORTED_PACKAGE_FILTER_REQUEST.search(request.question)
+                ):
+                    live_text += (
+                        "\nI can't check that condition in the catalogue right "
+                        "now; it only lets me filter packages by destination. "
+                        "Please confirm the requested season, dates, budget, or "
+                        "group size with the package provider before booking."
+                    )
+                live_data_used = True
+                live_data_sources = [endpoint_label]
+                log.info(
+                    "support_live_data_fetched",
+                    extra={
+                        "q_hash": q_hash,
+                        "intent": resolved.intent.value,
+                        "endpoint": endpoint_label,
+                        "source": resolved.source,
+                    },
+                )
+                if not use_rag:
+                    log.info(
+                        "support_answered",
+                        extra={
+                            "q_hash": q_hash,
+                            "audience": audience,
+                            "answer_type": AnswerType.ANSWERED.value,
+                            "citations": 0,
+                            "chunks": 0,
+                            "top_score": 0.0,
+                            "live_data_used": True,
+                            "intent": resolved.intent.value,
+                            "intent_source": resolved.source,
+                            "prompt_version": SUPPORT_PROMPT_VERSION,
+                            "answer_source": "live_api_formatter",
+                        },
+                    )
+                    return _live_data_response(
+                        answer=live_text,
+                        endpoint_label=endpoint_label,
+                        knowledge_version="",
+                    )
+            except LiveDataFetchError as exc:
+                log.warning(
+                    "support_live_data_failed",
+                    extra={
+                        "q_hash": q_hash,
+                        "intent": resolved.intent.value,
+                        "error": str(exc),
+                    },
+                )
+                if not use_rag:
+                    return _fallback(
+                        answer=(
+                            "I couldn't retrieve your live information right now. "
+                            "Please try again or check the app directly."
+                        ),
+                        answer_type=AnswerType.NEEDS_LIVE_DATA,
+                        knowledge_version="",
+                    )
+                live_data_warning = (
+                    "I couldn't retrieve your live account information. "
+                    "The answer below uses knowledge-base information only."
+                )
 
     # ------------------------------------------------------------------
     # 4. Live-looking question with no specific intent — fetcher does
@@ -484,13 +497,24 @@ def ask(
             answer=_VERSION_UNAVAILABLE_MESSAGE,
             answer_type=AnswerType.INSUFFICIENT_CONTEXT,
             knowledge_version=version.local_version,
+            live_data_warning=live_data_warning,
+        )
+    if not version.ok and live_data_used:
+        log.warning(
+            "support_version_unavailable_for_mixed_request",
+            extra={"q_hash": q_hash, "reason": version.reason},
+        )
+        live_data_warning = (
+            "The knowledge base is unavailable. The answer uses live account "
+            "information only."
         )
 
     # ------------------------------------------------------------------
-    # 6. Retrieve — only if we don't already have live data.
+    # 6. Retrieve for knowledge-only and mixed-source requests.
     # ------------------------------------------------------------------
     chunks: list[RetrievedChunk] = []
-    if not live_data_used:
+    should_retrieve = resolved.intent == LiveDataIntent.NONE or use_rag
+    if should_retrieve and version.ok:
         try:
             chunks = r.search(
                 prepare_retrieval_query(request.question),
@@ -509,25 +533,37 @@ def ask(
                 "support_retrieval_failed",
                 extra={"q_hash": q_hash, "error": str(exc)},
             )
-            return _fallback(
-                answer=_insufficient_message(audience),
-                answer_type=AnswerType.INSUFFICIENT_CONTEXT,
-                knowledge_version=version.local_version,
-                retrieval_mode_used="hybrid",
+            if not live_data_used:
+                return _fallback(
+                    answer=_insufficient_message(audience),
+                    answer_type=AnswerType.INSUFFICIENT_CONTEXT,
+                    knowledge_version=version.local_version,
+                    retrieval_mode_used="hybrid",
+                    live_data_warning=live_data_warning,
+                )
+            live_data_warning = (
+                "Knowledge-base retrieval failed. The answer uses live account "
+                "information only."
             )
         except Exception as exc:  # noqa: BLE001
             log.exception(
                 "support_retriever_unexpected",
                 extra={"q_hash": q_hash, "error": str(exc)},
             )
-            return _fallback(
-                answer=_insufficient_message(audience),
-                answer_type=AnswerType.INSUFFICIENT_CONTEXT,
-                knowledge_version=version.local_version,
-                retrieval_mode_used="hybrid",
+            if not live_data_used:
+                return _fallback(
+                    answer=_insufficient_message(audience),
+                    answer_type=AnswerType.INSUFFICIENT_CONTEXT,
+                    knowledge_version=version.local_version,
+                    retrieval_mode_used="hybrid",
+                    live_data_warning=live_data_warning,
+                )
+            live_data_warning = (
+                "Knowledge-base retrieval failed. The answer uses live account "
+                "information only."
             )
 
-        if not chunks:
+        if not chunks and not live_data_used:
             log.info(
                 "support_empty_retrieval",
                 extra={"q_hash": q_hash, "audience": audience},
@@ -537,7 +573,17 @@ def ask(
                 answer_type=AnswerType.INSUFFICIENT_CONTEXT,
                 knowledge_version=version.local_version,
                 retrieval_mode_used="hybrid",
+                live_data_warning=live_data_warning,
             )
+
+    # ------------------------------------------------------------------
+    retrieval_mode = (
+        "hybrid_live"
+        if live_data_used and should_retrieve and version.ok
+        else "hybrid"
+        if should_retrieve and version.ok
+        else "not_applicable"
+    )
 
     # ------------------------------------------------------------------
     # 7. LLM answer generation.
@@ -560,12 +606,18 @@ def ask(
             answer=_insufficient_message(audience),
             answer_type=AnswerType.INSUFFICIENT_CONTEXT,
             knowledge_version=version.local_version,
-            retrieval_mode_used=("not_applicable" if live_data_used else "hybrid"),
+            retrieval_mode_used=retrieval_mode,
             live_data_used=live_data_used,
             live_data_sources=live_data_sources,
+            live_data_warning=live_data_warning,
         )
 
-    if live_data_used and live_text and llm_out.answer_type == AnswerType.INSUFFICIENT_CONTEXT:
+    if (
+        live_data_used
+        and live_text
+        and llm_out.answer_type == AnswerType.INSUFFICIENT_CONTEXT
+        and (not use_rag or not chunks)
+    ):
         log.warning(
             "support_live_data_answer_fallback",
             extra={
@@ -607,11 +659,14 @@ def ask(
             answer=_live_data_message(audience),
             answer_type=AnswerType.NEEDS_LIVE_DATA,
             knowledge_version=version.local_version,
-            retrieval_mode_used=("not_applicable" if live_data_used else "hybrid"),
+            retrieval_mode_used=retrieval_mode,
+            live_data_used=live_data_used,
+            live_data_sources=live_data_sources,
+            live_data_warning=live_data_warning,
         )
 
     if llm_out.answer_type == AnswerType.ANSWERED:
-        if not live_data_used and not valid_citation_ids:
+        if chunks and not valid_citation_ids:
             log.warning(
                 "support_answer_without_valid_citations",
                 extra={"q_hash": q_hash},
@@ -620,7 +675,10 @@ def ask(
                 answer=_insufficient_message(audience),
                 answer_type=AnswerType.INSUFFICIENT_CONTEXT,
                 knowledge_version=version.local_version,
-                retrieval_mode_used=("not_applicable" if live_data_used else "hybrid"),
+                retrieval_mode_used=retrieval_mode,
+                live_data_used=live_data_used,
+                live_data_sources=live_data_sources,
+                live_data_warning=live_data_warning,
             )
 
     clean_answer, removed_paths = strip_forbidden_paths(llm_out.answer)
@@ -639,9 +697,10 @@ def ask(
             answer=_insufficient_message(audience),
             answer_type=AnswerType.INSUFFICIENT_CONTEXT,
             knowledge_version=version.local_version,
-            retrieval_mode_used=("not_applicable" if live_data_used else "hybrid"),
+            retrieval_mode_used=retrieval_mode,
             live_data_used=live_data_used,
             live_data_sources=live_data_sources,
+            live_data_warning=live_data_warning,
         )
 
     # ------------------------------------------------------------------
@@ -685,11 +744,11 @@ def ask(
         answer_type=llm_out.answer_type,
         citations=citations,
         confidence=confidence,
-        retrieval_mode_used="not_applicable" if live_data_used else "hybrid",
+        retrieval_mode_used=retrieval_mode,
         knowledge_version=version.local_version,
         provider="groq",
         prompt_version=SUPPORT_PROMPT_VERSION,
         live_data_used=live_data_used,
         live_data_sources=live_data_sources,
-        live_data_warning=None,
+        live_data_warning=live_data_warning,
     )

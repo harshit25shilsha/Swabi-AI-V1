@@ -46,6 +46,10 @@ GROUNDING
 - LIVE DATA is authoritative for the current user's current information.
 - RETRIEVED CONTEXT is approved knowledge for Swabi policies and general
   travel information.
+- For questions asking about both policy/process and current user information,
+  answer each part from its appropriate source: use RETRIEVED CONTEXT for
+  policy/process claims and LIVE DATA only for current user-specific facts.
+  Cite retrieved chunks for claims supported by RETRIEVED CONTEXT.
 - If LIVE DATA is present and answers the question, return answer_type="answered".
   Do not require a knowledge-base citation for an answer grounded only in LIVE DATA.
 - If only RETRIEVED CONTEXT is present, cite at least one relevant chunk.

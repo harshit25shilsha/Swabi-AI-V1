@@ -225,6 +225,170 @@ def test_policy_question_no_live_data(retriever, patch_version_ok, patch_gateway
     assert r.live_data_sources == []
 
 
+def test_cancel_and_refund_instructions_use_rag_without_live_api(
+    retriever, patch_version_ok, patch_gateway
+):
+    retriever.search.return_value = [
+        RetrievedChunk(
+            chunk_id="c1",
+            section_id="refund-policy",
+            section_path="Policies/Refunds",
+            text="Cancellation and refund policy details.",
+            score=0.8,
+        ),
+    ]
+    patch_gateway.generate_structured_sync.return_value = LLMAnswerOutput(
+        answer_type=AnswerType.ANSWERED,
+        answer="Follow the cancellation and refund policy.",
+        citation_chunk_ids=["c1"],
+        confidence=0.9,
+    )
+    with patch(
+        "app.capabilities.support.service.fetch_for_intent"
+    ) as fetch_for_intent:
+        response = ask(
+            SupportAskRequest(
+                question="How can I cancel my booking and get a refund?",
+                audience=Audience.CUSTOMER,
+            ),
+            retriever=retriever,
+            user_jwt="jwt-x",
+        )
+
+    fetch_for_intent.assert_not_called()
+    retriever.search.assert_called_once()
+    assert response.live_data_used is False
+    assert response.retrieval_mode_used == "hybrid"
+    assert [citation.chunk_id for citation in response.citations] == ["c1"]
+
+
+def test_policy_and_booking_status_uses_rag_and_live_api(
+    retriever, patch_version_ok, patch_gateway
+):
+    retriever.search.return_value = [
+        RetrievedChunk(
+            chunk_id="c1",
+            section_id="refund-policy",
+            section_path="Policies/Refunds",
+            text="Cancellation policy details.",
+            score=0.8,
+        ),
+    ]
+    patch_gateway.generate_structured_sync.return_value = LLMAnswerOutput(
+        answer_type=AnswerType.ANSWERED,
+        answer="Your booking is upcoming; see the cited policy for cancellation terms.",
+        citation_chunk_ids=["c1"],
+        confidence=0.9,
+    )
+    with patch(
+        "app.capabilities.support.service.fetch_for_intent",
+        return_value=(
+            "GET /api/bookings/my",
+            {"bookings": [{"bookingCode": "BK-1", "status": "upcoming"}], "total": 1},
+        ),
+    ) as fetch_for_intent:
+        response = ask(
+            SupportAskRequest(
+                question=(
+                    "What is the cancellation policy and what is the status "
+                    "of my booking?"
+                ),
+                audience=Audience.CUSTOMER,
+            ),
+            retriever=retriever,
+            user_jwt="jwt-x",
+        )
+
+    fetch_for_intent.assert_called_once()
+    retriever.search.assert_called_once()
+    assert response.live_data_used is True
+    assert response.retrieval_mode_used == "hybrid_live"
+    assert [citation.chunk_id for citation in response.citations] == ["c1"]
+
+
+def test_mixed_request_without_jwt_still_answers_from_rag(
+    retriever, patch_version_ok, patch_gateway
+):
+    retriever.search.return_value = [
+        RetrievedChunk(
+            chunk_id="c1",
+            section_id="refund-policy",
+            section_path="Policies/Refunds",
+            text="Cancellation policy details.",
+            score=0.8,
+        ),
+    ]
+    patch_gateway.generate_structured_sync.return_value = LLMAnswerOutput(
+        answer_type=AnswerType.ANSWERED,
+        answer="See the cited cancellation policy.",
+        citation_chunk_ids=["c1"],
+        confidence=0.9,
+    )
+    with patch(
+        "app.capabilities.support.service.fetch_for_intent"
+    ) as fetch_for_intent:
+        response = ask(
+            SupportAskRequest(
+                question=(
+                    "What is the cancellation policy and what is the status "
+                    "of my booking?"
+                ),
+                audience=Audience.CUSTOMER,
+            ),
+            retriever=retriever,
+            user_jwt=None,
+        )
+
+    fetch_for_intent.assert_not_called()
+    retriever.search.assert_called_once()
+    assert response.live_data_used is False
+    assert response.live_data_warning is not None
+    assert response.citations[0].chunk_id == "c1"
+
+
+def test_mixed_request_api_failure_still_answers_from_rag(
+    retriever, patch_version_ok, patch_gateway
+):
+    from app.capabilities.support.live_data import LiveDataFetchError
+
+    retriever.search.return_value = [
+        RetrievedChunk(
+            chunk_id="c1",
+            section_id="refund-policy",
+            section_path="Policies/Refunds",
+            text="Cancellation policy details.",
+            score=0.8,
+        ),
+    ]
+    patch_gateway.generate_structured_sync.return_value = LLMAnswerOutput(
+        answer_type=AnswerType.ANSWERED,
+        answer="Follow the cited cancellation policy.",
+        citation_chunk_ids=["c1"],
+        confidence=0.9,
+    )
+    with patch(
+        "app.capabilities.support.service.fetch_for_intent",
+        side_effect=LiveDataFetchError("backend unavailable"),
+    ):
+        response = ask(
+            SupportAskRequest(
+                question=(
+                    "What is the cancellation policy and what is the status "
+                    "of my booking?"
+                ),
+                audience=Audience.CUSTOMER,
+            ),
+            retriever=retriever,
+            user_jwt="jwt-x",
+        )
+
+    retriever.search.assert_called_once()
+    assert response.answer_type == AnswerType.ANSWERED
+    assert response.live_data_used is False
+    assert response.live_data_warning is not None
+    assert response.citations[0].chunk_id == "c1"
+
+
 def test_booking_detail_uses_live_data_without_rag_chunks(
     retriever, patch_version_ok, patch_gateway
 ):
