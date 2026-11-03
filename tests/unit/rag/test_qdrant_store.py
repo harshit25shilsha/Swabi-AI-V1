@@ -11,7 +11,6 @@ import pytest
 from app.rag.qdrant_store import (
     QdrantStore,
     QdrantStoreError,
-    _bm25_cache,
     _current_content_filter,
     _payload,
     _point_id,

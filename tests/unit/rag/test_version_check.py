@@ -57,3 +57,50 @@ def test_version_authority_fails_closed_when_qdrant_is_unavailable(tmp_path):
     assert status.ok is False
     assert status.local_version == "abc123"
     assert status.reason == "qdrant unavailable: connection failed"
+
+
+def test_version_authority_reuses_successful_validation(tmp_path):
+    current = tmp_path / "CURRENT"
+    current.write_text("abc123\n", encoding="utf-8")
+
+    store = MagicMock()
+    store.current_versioned_collection.return_value = "swabi_chunks_vabc123"
+    store.versioned_name.return_value = "swabi_chunks_vabc123"
+
+    first = check_version_authority(current_file=current, store=store)
+    second = check_version_authority(current_file=current, store=store)
+
+    assert first.ok is True
+    assert second.ok is True
+
+    # Qdrant alias is checked only once for this version.
+    store.current_versioned_collection.assert_called_once()
+
+
+def test_version_authority_revalidates_when_current_changes(tmp_path):
+    current = tmp_path / "CURRENT"
+    current.write_text("version-one\n", encoding="utf-8")
+
+    store = MagicMock()
+    store.current_versioned_collection.side_effect = [
+        "swabi_chunks_vversion-one",
+        "swabi_chunks_vversion-two",
+    ]
+    store.versioned_name.side_effect = [
+        "swabi_chunks_vversion-one",
+        "swabi_chunks_vversion-two",
+    ]
+
+    first = check_version_authority(current_file=current, store=store)
+
+    current.write_text("version-two\n", encoding="utf-8")
+
+    second = check_version_authority(current_file=current, store=store)
+
+    assert first.ok is True
+    assert first.local_version == "version-one"
+
+    assert second.ok is True
+    assert second.local_version == "version-two"
+
+    assert store.current_versioned_collection.call_count == 2

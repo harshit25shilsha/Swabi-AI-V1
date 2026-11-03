@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import threading
 import uuid
@@ -9,12 +10,12 @@ from collections import OrderedDict
 from datetime import UTC, date, datetime, time
 from time import perf_counter
 from typing import Any
+
 import httpx
 
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.rag.schemas import Chunk, RetrievedChunk
-
 
 log = get_logger(__name__)
 
@@ -132,32 +133,56 @@ class QdrantStore:
         self.collection = collection or settings.qdrant_collection
         self.timeout = timeout or settings.qdrant_timeout
         self._client = None
+        self._client_lock = threading.Lock()
+        self._client_created_at: float | None = None
+        self._client_created_thread_id: int | None = None
 
     # -- Client
 
     def _get_client(self):
         if self._client is None:
-            try:
-                from qdrant_client import QdrantClient  # noqa: PLC0415
-            except ImportError as exc:
-                raise QdrantStoreError(
-                    "qdrant-client is not installed. "
-                    "Install with: pip install -r requirements-rag.txt"
-                ) from exc
-                
-            # Explicitly enable HTTP connection reuse.
-            # Qdrant SDK otherwise disables keep-alive for localhost.
-            connection_limits = httpx.Limits(
-                max_connections=20,
-                max_keepalive_connections=10,
-                keepalive_expiry=30.0,
-            )
-            self._client = QdrantClient(
-                url=self.url,
-                api_key=self.api_key,
-                timeout=self.timeout,
-                limits=connection_limits,
-            )
+            with self._client_lock:
+                if self._client is None:
+                    init_started = perf_counter()
+
+                    try:
+                        from qdrant_client import QdrantClient  # noqa: PLC0415
+                    except ImportError as exc:
+                        raise QdrantStoreError(
+                            "qdrant-client is not installed. "
+                            "Install with: pip install -r requirements-rag.txt"
+                        ) from exc
+
+                    connection_limits = httpx.Limits(
+                        max_connections=20,
+                        max_keepalive_connections=10,
+                        keepalive_expiry=30.0,
+                    )
+
+                    client = QdrantClient(
+                        url=self.url,
+                        api_key=self.api_key,
+                        timeout=self.timeout,
+                        limits=connection_limits,
+                    )
+
+                    self._client = client
+                    self._client_created_at = perf_counter()
+                    self._client_created_thread_id = threading.get_ident()
+
+                    log.info(
+                        "qdrant client initialized",
+                        extra={
+                            "event": "qdrant_client_initialized",
+                            "client_id": id(client),
+                            "process_id": os.getpid(),
+                            "thread_id": threading.get_ident(),
+                            "client_init_ms": round(
+                                (perf_counter() - init_started) * 1000, 2
+                            ),
+                        },
+                    )
+
         return self._client
 
     def ping(self) -> bool:
@@ -350,14 +375,46 @@ class QdrantStore:
 
         # This includes HTTP transport, waiting, and Qdrant response.
         query_started = perf_counter()
-        response = client.query_points(
-            collection_name=collection_name,
-            query=query_vector,
-            limit=top_k,
-            query_filter=query_filter,
-            score_threshold=min_score,
-            with_payload=True,
-        )
+
+        try:
+            response = client.query_points(
+                collection_name=collection_name,
+                query=query_vector,
+                limit=top_k,
+                query_filter=query_filter,
+                score_threshold=min_score,
+                with_payload=True,
+            )
+        except Exception as exc:
+            query_ms = round(
+                (perf_counter() - query_started) * 1000, 2
+            )
+
+            log.exception(
+                "qdrant dense query failed",
+                extra={
+                    "event": "qdrant_dense_query_failed",
+                    "collection": collection_name,
+                    "client_id": id(client),
+                    "process_id": os.getpid(),
+                    "thread_id": threading.get_ident(),
+                    "client_created_thread_id": self._client_created_thread_id,
+                    "client_age_ms": (
+                        round(
+                            (perf_counter() - self._client_created_at) * 1000,
+                            2,
+                        )
+                        if self._client_created_at is not None
+                        else None
+                    ),
+                    "client_acquire_ms": client_ms,
+                    "filter_ms": filter_ms,
+                    "query_ms": query_ms,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            raise
+
         query_ms = round(
             (perf_counter() - query_started) * 1000, 2
         )
@@ -399,12 +456,24 @@ class QdrantStore:
                 "audience": audience,
                 "area": area,
                 "index_version": index_version,
+                "client_id": id(client),
+                "process_id": os.getpid(),
+                "thread_id": threading.get_ident(),
+                "client_created_thread_id": self._client_created_thread_id,
+                "client_age_ms": (
+                    round(
+                        (perf_counter() - self._client_created_at) * 1000,
+                        2,
+                    )
+                    if self._client_created_at is not None
+                    else None
+                ),
             },
         )
 
         return out
-    
-    
+
+
     def warm_keyword_index(
         self,
         *,

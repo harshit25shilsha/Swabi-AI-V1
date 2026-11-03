@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import uuid
-from contextlib import asynccontextmanager
-
 import asyncio
 import logging
+import uuid
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -109,8 +108,8 @@ async def lifespan(app: FastAPI):
     finally:
         close_sync_client()
         await redis_manager.close()
-        
-        
+
+
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,

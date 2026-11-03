@@ -74,31 +74,96 @@ def _get(
     user_jwt: str | None,
     params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    total_started = time.perf_counter()
     url = f"{settings.swabi_api_base_url.rstrip('/')}{path}"
+
     for attempt in range(1, LIVE_FETCH_MAX_ATTEMPTS + 1):
+        client_init_ms = 0.0
+        http_request_ms = 0.0
+        attempt_started = time.perf_counter()
+
         try:
+            client_started = time.perf_counter()
+
             with httpx.Client(timeout=LIVE_FETCH_TIMEOUT) as client:
-                resp = client.get(url, headers=_headers(user_jwt), params=params or {})
-            break
-        except httpx.TimeoutException as exc:
-            if attempt == LIVE_FETCH_MAX_ATTEMPTS:
-                raise LiveDataFetchError(f"{path}: timeout") from exc
-            log.warning(
-                "live_data_timeout_retry",
+                client_init_ms = (
+                    time.perf_counter() - client_started
+                ) * 1000
+
+                http_started = time.perf_counter()
+
+                resp = client.get(
+                    url,
+                    headers=_headers(user_jwt),
+                    params=params or {},
+                )
+
+                http_request_ms = (
+                    time.perf_counter() - http_started
+                ) * 1000
+
+            log.info(
+                "live_data_http_timing",
                 extra={
+                    "event": "live_data_http_timing",
                     "path": path,
+                    "method": "GET",
                     "attempt": attempt,
-                    "max_attempts": LIVE_FETCH_MAX_ATTEMPTS,
+                    "status_code": resp.status_code,
+                    "client_init_ms": round(client_init_ms, 2),
+                    "http_request_ms": round(http_request_ms, 2),
+                    "attempt_total_ms": round(
+                        (time.perf_counter() - attempt_started) * 1000,
+                        2,
+                    ),
                 },
             )
+            break
+
+        except httpx.TimeoutException as exc:
+            log.warning(
+                "live_data_http_timeout",
+                extra={
+                    "event": "live_data_http_timing",
+                    "path": path,
+                    "attempt": attempt,
+                    "client_init_ms": round(client_init_ms, 2),
+                    "http_request_ms": round(http_request_ms, 2),
+                    "attempt_total_ms": round(
+                        (time.perf_counter() - attempt_started) * 1000,
+                        2,
+                    ),
+                },
+            )
+
+            if attempt == LIVE_FETCH_MAX_ATTEMPTS:
+                raise LiveDataFetchError(f"{path}: timeout") from exc
+
             time.sleep(LIVE_FETCH_RETRY_DELAY_SECONDS)
+
         except httpx.HTTPError as exc:
+            log.warning(
+                "live_data_http_failed",
+                extra={
+                    "event": "live_data_http_timing",
+                    "path": path,
+                    "attempt": attempt,
+                    "error_type": type(exc).__name__,
+                    "attempt_total_ms": round(
+                        (time.perf_counter() - attempt_started) * 1000,
+                        2,
+                    ),
+                },
+            )
             raise LiveDataFetchError(f"{path}: {exc}") from exc
 
     if resp.status_code == 401:
         raise LiveDataFetchError(f"{path}: 401 unauthorized")
+
     if resp.status_code >= 400:
-        raise LiveDataFetchError(f"{path}: HTTP {resp.status_code}: {resp.text[:200]}")
+        raise LiveDataFetchError(
+            f"{path}: HTTP {resp.status_code}: {resp.text[:200]}"
+        )
 
     try:
         body = resp.json()
@@ -111,8 +176,10 @@ def _get(
     if set(body.keys()) == {"payload"}:
         if not settings.swabi_response_passphrase:
             raise LiveDataFetchError(
-                f"{path}: encrypted response but SWABI_RESPONSE_PASSPHRASE is not configured"
+                f"{path}: encrypted response but "
+                "SWABI_RESPONSE_PASSPHRASE is not configured"
             )
+
         log.info(
             "live_data_decrypt",
             extra={
@@ -120,6 +187,7 @@ def _get(
                 "ciphertext_len": len(body["payload"]),
             },
         )
+
         try:
             plaintext = decrypt_payload(
                 body["payload"],
@@ -127,19 +195,42 @@ def _get(
                 kdf=settings.swabi_response_kdf,
             )
         except SwabiDecryptionError as exc:
-            raise LiveDataFetchError(f"{path}: decryption failed: {exc}") from exc
+            raise LiveDataFetchError(
+                f"{path}: decryption failed: {exc}"
+            ) from exc
+
         try:
             body = json.loads(plaintext)
         except json.JSONDecodeError as exc:
-            raise LiveDataFetchError(f"{path}: decrypted payload is not JSON: {exc}") from exc
+            raise LiveDataFetchError(
+                f"{path}: decrypted payload is not JSON: {exc}"
+            ) from exc
+
         if not isinstance(body, dict):
-            raise LiveDataFetchError(f"{path}: decrypted response is not a dict")
+            raise LiveDataFetchError(
+                f"{path}: decrypted response is not a dict"
+            )
 
     if not body.get("success", True):
-        raise LiveDataFetchError(f"{path}: {body.get('message', 'error')}")
+        raise LiveDataFetchError(
+            f"{path}: {body.get('message', 'error')}"
+        )
+
+    log.info(
+        "live_data_fetch_completed",
+        extra={
+            "event": "live_data_fetch_timing",
+            "path": path,
+            "status_code": resp.status_code,
+            "http_request_ms": round(http_request_ms, 2),
+            "total_ms": round(
+                (time.perf_counter() - total_started) * 1000,
+                2,
+            ),
+        },
+    )
 
     return body
-
 
 def _unwrap(response: dict[str, Any]) -> Any:
     return response.get("data")

@@ -351,12 +351,15 @@ class GroqProvider:
         json_mode: bool = False,
         **extra: object,
     ) -> LLMResponse:
-        """Synchronous mirror of ``generate``.
+        """Synchronous Groq generation with per-stage latency logging."""
 
-        Uses the module-level shared ``httpx.Client`` so connections are
-        pooled. Same payload, same retry policy, same response parsing.
-        """
-        payload = self._build_payload(prompt, system, temperature, json_mode, extra)
+        payload = self._build_payload(
+            prompt,
+            system,
+            temperature,
+            json_mode,
+            extra,
+        )
 
         attempt = 0
         delay = _INITIAL_RETRY_DELAY
@@ -365,81 +368,192 @@ class GroqProvider:
 
         while attempt <= self.max_retries:
             attempt += 1
-            start = time.perf_counter()
+            attempt_started = time.perf_counter()
+
+            semaphore_wait_ms = 0.0
+            tpm_wait_ms = 0.0
+            http_request_ms = 0.0
+            reservation_id: str | None = None
+            acquired = False
+
+            def log_attempt(
+                *,
+                status_code: int | None = None,
+                error_type: str | None = None,
+            ) -> None:
+                log.info(
+                    "groq_attempt_timing",
+                    extra={
+                        "event": "groq_attempt_timing",
+                        "model": self.model,
+                        "attempt": attempt,
+                        "max_attempts": self.max_retries + 1,
+                        "status_code": status_code,
+                        "error_type": error_type,
+                        "semaphore_wait_ms": round(semaphore_wait_ms, 2),
+                        "tpm_wait_ms": round(tpm_wait_ms, 2),
+                        "http_request_ms": round(http_request_ms, 2),
+                        "attempt_total_ms": round(
+                            (time.perf_counter() - attempt_started) * 1000,
+                            2,
+                        ),
+                    },
+                )
+
             try:
                 client = _get_sync_client()
-                with _request_semaphore:
-                    reservation_id = groq_tpm_limiter.wait_for_capacity(estimated_tokens)
-                    resp = client.post(
-                        GROQ_CHAT_URL,
-                        headers=self._headers(),
-                        json=payload,
-                        timeout=self.timeout,
-                    )
+
+                semaphore_started = time.perf_counter()
+                _request_semaphore.acquire()
+                acquired = True
+
+                semaphore_wait_ms = (
+                    time.perf_counter() - semaphore_started
+                ) * 1000
+
+                tpm_started = time.perf_counter()
+
+                reservation_id = groq_tpm_limiter.wait_for_capacity(
+                    estimated_tokens
+                )
+
+                tpm_wait_ms = (
+                    time.perf_counter() - tpm_started
+                ) * 1000
+
+                http_started = time.perf_counter()
+
+                resp = client.post(
+                    GROQ_CHAT_URL,
+                    headers=self._headers(),
+                    json=payload,
+                    timeout=self.timeout,
+                )
+
+                http_request_ms = (
+                    time.perf_counter() - http_started
+                ) * 1000
+
             except httpx.TimeoutException as exc:
-                last_exc = AITimeoutError(f"Groq timeout after {self.timeout}s")
+                log_attempt(error_type="timeout")
+
+                last_exc = AITimeoutError(
+                    f"Groq timeout after {self.timeout}s"
+                )
+
                 log.warning(
                     "Groq sync timeout (attempt %d/%d)",
                     attempt,
                     self.max_retries + 1,
                 )
+
                 if attempt > self.max_retries:
                     raise last_exc from exc
+
                 time.sleep(delay)
                 delay *= 2
                 continue
+
             except httpx.HTTPError as exc:
-                last_exc = AIProviderError(f"Groq network error: {exc}")
-                log.warning("Groq sync network error (attempt %d): %s", attempt, exc)
+                log_attempt(error_type="http_error")
+
+                last_exc = AIProviderError(
+                    f"Groq network error: {exc}"
+                )
+
+                log.warning(
+                    "Groq sync network error (attempt %d): %s",
+                    attempt,
+                    exc,
+                )
+
                 if attempt > self.max_retries:
                     raise last_exc from exc
+
                 time.sleep(delay)
                 delay *= 2
                 continue
+
+            except Exception as exc:
+                log_attempt(error_type=type(exc).__name__)
+                raise
+
+            finally:
+                if acquired:
+                    _request_semaphore.release()
+
+            log_attempt(status_code=resp.status_code)
 
             groq_tpm_limiter.update_from_response(
                 resp.headers,
                 resp.text if resp.status_code >= 400 else "",
             )
-            if resp.status_code in RETRYABLE_STATUS and attempt <= self.max_retries:
+
+            if (
+                resp.status_code in RETRYABLE_STATUS
+                and attempt <= self.max_retries
+            ):
                 log.warning(
                     "Groq sync retryable status %s (attempt %d)",
                     resp.status_code,
                     attempt,
                 )
+
                 time.sleep(_retry_delay(resp, delay))
                 delay *= 2
                 continue
 
             if resp.status_code >= 400:
                 body = resp.text
+
                 if (
-                    self._is_json_validate_failure(resp.status_code, body, json_mode)
+                    self._is_json_validate_failure(
+                        resp.status_code,
+                        body,
+                        json_mode,
+                    )
                     and attempt <= self.max_retries
                 ):
-                    log.warning("Groq json_validate_failed; retrying without response_format")
+                    log.warning(
+                        "Groq json_validate_failed; "
+                        "retrying without response_format"
+                    )
+
                     payload.pop("response_format", None)
                     json_mode = False
+
                     time.sleep(0.2)
                     continue
-                raise AIProviderError(f"Groq HTTP {resp.status_code}: {body[:300]}")
+
+                raise AIProviderError(
+                    f"Groq HTTP {resp.status_code}: {body[:300]}"
+                )
 
             data = resp.json()
-            latency_ms = (time.perf_counter() - start) * 1000
+
+            latency_ms = (
+                time.perf_counter() - attempt_started
+            ) * 1000
+
             result = self._parse_response(data, self.model)
             result.latency_ms = latency_ms
+
             result.metadata = {
                 "provider": "groq",
                 "attempt": attempt,
                 "mode": "sync",
                 "finish_reason": result.metadata.get("finish_reason"),
             }
-            if result.usage.total_tokens > 0:
+
+            if result.usage.total_tokens > 0 and reservation_id is not None:
                 groq_tpm_limiter.reconcile_reservation(
                     reservation_id,
                     estimated_tokens,
                     result.usage.total_tokens,
                 )
+
             return result
 
-        raise AIProviderError(f"Groq sync failed after retries: {last_exc}")
+        raise AIProviderError(
+            f"Groq sync failed after retries: {last_exc}"
+        )

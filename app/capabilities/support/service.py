@@ -25,6 +25,7 @@ import hashlib
 import logging
 import re
 import threading
+import time
 
 from app.capabilities.support.forbidden import (
     has_financial_promise,
@@ -124,6 +125,24 @@ def _insufficient_message(audience: str) -> str:
         "Bookings, or Payments section in the app, or contact Swabi support."
     )
 
+def _log_support_stage(
+    stage: str,
+    started_at: float,
+    **fields: object,
+) -> None:
+    """Log one Support API pipeline stage without recording user content."""
+    log.info(
+        "support_stage_timing",
+        extra={
+            "event": "support_stage_timing",
+            "stage": stage,
+            "duration_ms": round(
+                (time.perf_counter() - started_at) * 1000,
+                2,
+            ),
+            **fields,
+        },
+    )
 
 def _live_data_message(audience: str) -> str:
     if audience == "vendor":
@@ -328,7 +347,15 @@ def ask(
     # ------------------------------------------------------------------
     # 1. Resolve intent — deterministic first, LLM fallback.
     # ------------------------------------------------------------------
+    intent_started = time.perf_counter()
     resolved = _get_resolver().resolve(request.question, audience)
+    _log_support_stage(
+    "intent_resolution",
+    intent_started,
+    intent=resolved.intent.value,
+    intent_source=resolved.source,
+    use_rag=resolved.use_rag,
+)
     use_rag = resolved.use_rag is True
 
     # Recognized live-data intents whose backend integration is not wired yet.
@@ -395,6 +422,7 @@ def ask(
                 "The answer below uses knowledge-base information only."
             )
         else:
+            live_stage_started = time.perf_counter()
             try:
                 endpoint_label, payload = fetch_for_intent(
                     resolved.intent,
@@ -467,6 +495,13 @@ def ask(
                     "I couldn't retrieve your live account information. "
                     "The answer below uses knowledge-base information only."
                 )
+            finally:
+                _log_support_stage(
+                    "live_data_fetch_and_format",
+                    live_stage_started,
+                    intent=resolved.intent.value,
+                    live_data_used=live_data_used,
+                )
 
     # ------------------------------------------------------------------
     # 4. Live-looking question with no specific intent — fetcher does
@@ -487,7 +522,15 @@ def ask(
     # 5. Version authority check — RAG path only.
     # ------------------------------------------------------------------
     r = retriever or _get_retriever()
+
+    version_started = time.perf_counter()
     version = check_version_authority(store=r.store)
+    _log_support_stage(
+        "knowledge_version_check",
+        version_started,
+        version_ok=version.ok,
+    )
+
     if not version.ok and not live_data_used:
         log.warning(
             "support_version_unavailable",
@@ -514,6 +557,7 @@ def ask(
     # ------------------------------------------------------------------
     chunks: list[RetrievedChunk] = []
     should_retrieve = resolved.intent == LiveDataIntent.NONE or use_rag
+    retrieval_stage_started = time.perf_counter()
     if should_retrieve and version.ok:
         try:
             chunks = r.search(
@@ -562,6 +606,13 @@ def ask(
                 "Knowledge-base retrieval failed. The answer uses live account "
                 "information only."
             )
+        finally:
+            _log_support_stage(
+                "support_retrieval_wrapper",
+                retrieval_stage_started,
+                retrieval_attempted=True,
+                chunk_count=len(chunks),
+            )
 
         if not chunks and not live_data_used:
             log.info(
@@ -588,7 +639,25 @@ def ask(
     # ------------------------------------------------------------------
     # 7. LLM answer generation.
     # ------------------------------------------------------------------
-    user_message = _build_user_message(request.question, chunks, audience, live_text)
+
+    prompt_started = time.perf_counter()
+    user_message = _build_user_message(
+        request.question,
+        chunks,
+        audience,
+        live_text,
+    )
+
+    _log_support_stage(
+    "prompt_construction",
+    prompt_started,
+    chunk_count=len(chunks),
+    prompt_chars=len(user_message),
+    live_data_included=live_text is not None,
+    )
+
+    llm_stage_started = time.perf_counter()
+
     try:
         llm_out = _get_gateway().generate_structured_sync(
             prompt=user_message,
@@ -597,7 +666,19 @@ def ask(
             temperature=0.0,
             max_tokens=settings.support_answer_max_tokens,
         )
+        _log_support_stage(
+            "llm_generation_total",
+            llm_stage_started,
+            outcome="success",
+        )
     except Exception as exc:  # noqa: BLE001
+        _log_support_stage(
+            "llm_generation_total",
+            llm_stage_started,
+            outcome="failed",
+            error_type=type(exc).__name__,
+        )
+
         log.exception(
             "support_llm_failed",
             extra={"q_hash": q_hash, "error": str(exc)},

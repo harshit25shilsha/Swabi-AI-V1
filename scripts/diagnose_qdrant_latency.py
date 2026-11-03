@@ -18,7 +18,6 @@ from app.core.config import settings
 from app.rag.embeddings import EmbeddingModel
 from app.rag.qdrant_store import QdrantStore, _retrieval_filter
 
-
 QUERY = "what is the cancellation policy in this platform?"
 AUDIENCE = "customer"
 TOP_K = 20
