@@ -106,6 +106,12 @@ _GENERAL_PROCESS_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"\bwhat\s+if\b|\bif\b.{0,80}\b(does\s+not|doesn't|fails\s+to)\s+show\b",
         re.IGNORECASE,
     ),
+    re.compile(
+    r"\bhow\s+i\s+can\b.{0,100}\b"
+    r"(book|create|post|submit|accept)\b.{0,100}\b"
+    r"(packages?|enquir(?:y|ies)|bids?|bookings?)\b",
+    re.IGNORECASE,
+),
 )
 
 _KNOWLEDGE_TOPIC_PATTERNS: tuple[re.Pattern[str], ...] = (

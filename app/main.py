@@ -15,6 +15,10 @@ from app.api.routes.enquiry import router as enquiry_router
 from app.api.routes.health import router as health_router
 from app.api.routes.metrics import router as metrics_router
 from app.api.routes.support import router as support_router
+from app.capabilities.support.live_data import (
+    close_live_data_client,
+    initialize_live_data_client,
+)
 from app.core.auth_context import set_user_id, set_user_jwt
 from app.core.config import settings
 from app.core.exceptions import (
@@ -99,6 +103,9 @@ async def lifespan(app: FastAPI):
     await redis_manager.connect()
 
     try:
+        # Initialize the shared Swabi API connection pool.
+        initialize_live_data_client()
+
         # Qdrant and BM25 operations are synchronous. Run them outside
         # the event loop so startup work does not block async execution.
         await asyncio.to_thread(_warm_support_bm25)
@@ -106,6 +113,7 @@ async def lifespan(app: FastAPI):
         yield
 
     finally:
+        close_live_data_client()
         close_sync_client()
         await redis_manager.close()
 

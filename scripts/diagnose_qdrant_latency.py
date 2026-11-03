@@ -1,9 +1,12 @@
 
 import os
+import socket
+import ssl
 import sys
 from importlib.metadata import version
 from pathlib import Path
 from time import perf_counter
+from urllib.parse import urlparse
 
 import httpx
 import qdrant_client
@@ -22,6 +25,103 @@ QUERY = "what is the cancellation policy in this platform?"
 AUDIENCE = "customer"
 TOP_K = 20
 INDEX_VERSION = "a441a35b9643"
+
+
+def test_connection_phases(url: str) -> None:
+    """Measure DNS, TCP, and optional TLS setup independently."""
+    print("\n--- DNS / TCP / TLS CONNECTION PHASES ---")
+
+    parsed = urlparse(url)
+    host = parsed.hostname
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+
+    if not host:
+        print("Could not determine Qdrant hostname.")
+        return
+
+    connection = None
+
+    try:
+        # DNS lookup
+        started = perf_counter()
+        addresses = socket.getaddrinfo(
+            host,
+            port,
+            type=socket.SOCK_STREAM,
+        )
+        dns_ms = (perf_counter() - started) * 1000
+
+        if not addresses:
+            print("DNS returned no addresses.")
+            return
+
+
+        for index, (family, socktype, proto, _, sockaddr) in enumerate(
+            addresses,
+            start=1,
+        ):
+            
+            connection = socket.socket(family, socktype, proto)
+            connection.settimeout(5)
+
+            try:
+                started = perf_counter()
+                connection.connect(sockaddr)
+                tcp_ms = (perf_counter() - started) * 1000
+
+                print(
+                    f"Address {index}: {sockaddr} | "
+                    f"TCP connected | {tcp_ms:.2f} ms"
+                )
+
+            except OSError as exc:
+                print(
+                    f"Address {index}: {sockaddr} | "
+                    f"TCP failed | {type(exc).__name__}: {exc}"
+                )
+
+            finally:
+                connection.close()   
+        
+
+        print(f"Resolved host: {host}")
+        print(f"Resolved address count: {len(addresses)}")
+        print(f"DNS lookup: {dns_ms:.2f} ms")
+
+        # TCP connection
+        connection = socket.socket(family, socktype, proto)
+        connection.settimeout(10)
+
+        started = perf_counter()
+        connection.connect(sockaddr)
+        tcp_ms = (perf_counter() - started) * 1000
+
+        print(f"TCP connect: {tcp_ms:.2f} ms")
+
+        # TLS handshake, only for HTTPS
+        if parsed.scheme == "https":
+            context = ssl.create_default_context()
+
+            started = perf_counter()
+            connection = context.wrap_socket(
+                connection,
+                server_hostname=host,
+            )
+            tls_ms = (perf_counter() - started) * 1000
+
+            print(f"TLS handshake: {tls_ms:.2f} ms")
+            print(f"TLS version: {connection.version()}")
+
+    except Exception as exc:
+        print(
+            "Connection phase diagnostic failed:",
+            type(exc).__name__,
+            str(exc),
+        )
+
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 def timed_httpx_test(
@@ -55,6 +155,115 @@ def timed_httpx_test(
                 f"status={response.status_code}"
             )
 
+def test_httpx_response_phases(
+    *,
+    url: str,
+    headers: dict,
+    body: dict,
+) -> None:
+    """Measure time to response headers separately from body download."""
+    print("\n--- HTTPX RESPONSE PHASE TIMINGS ---")
+
+    with httpx.Client(timeout=30, trust_env=False) as session:
+        for i in range(1, 4):
+            response = None
+
+            try:
+                request = session.build_request(
+                    "POST",
+                    url,
+                    headers=headers,
+                    json=body,
+                )
+
+                started = perf_counter()
+
+                response = session.send(
+                    request,
+                    stream=True,
+                )
+
+                headers_ms = (perf_counter() - started) * 1000
+
+                body_started = perf_counter()
+                response.read()
+                body_ms = (perf_counter() - body_started) * 1000
+
+                response.raise_for_status()
+
+                result = response.json()
+
+                print(
+                    f"Request {i}: "
+                    f"headers_wait_ms={headers_ms:.2f}, "
+                    f"body_download_ms={body_ms:.2f}, "
+                    f"total_ms={headers_ms + body_ms:.2f}, "
+                    f"qdrant_server_time={result.get('time')}, "
+                    f"status={response.status_code}"
+                )
+
+            except Exception as exc:
+                print(
+                    f"Request {i} failed:",
+                    type(exc).__name__,
+                    str(exc),
+                )
+
+            finally:
+                if response is not None:
+                    response.close()
+          
+def compare_localhost_and_ipv4(
+    *,
+    url: str,
+    headers: dict,
+    body: dict,
+) -> None:
+    """Compare fresh HTTP connections using localhost and IPv4."""
+    print("\n--- LOCALHOST VS IPV4 CONNECTION TEST ---")
+
+    ipv4_url = url.replace("localhost", "127.0.0.1")
+
+    targets = [
+        ("localhost", url),
+        ("127.0.0.1", ipv4_url),
+    ]
+
+    for label, target_url in targets:
+        print(f"\nTesting {label}")
+
+        for i in range(1, 4):
+            try:
+                # A fresh client forces a new HTTP connection.
+                with httpx.Client(
+                    timeout=30,
+                    trust_env=False,
+                ) as session:
+                    started = perf_counter()
+
+                    response = session.post(
+                        target_url,
+                        headers=headers,
+                        json=body,
+                    )
+
+                    elapsed = (perf_counter() - started) * 1000
+                    response.raise_for_status()
+
+                    result = response.json()
+
+                    print(
+                        f"Request {i}: "
+                        f"client_total_ms={elapsed:.2f}, "
+                        f"qdrant_server_time={result.get('time')}"
+                    )
+
+            except Exception as exc:
+                print(
+                    f"Request {i} failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+         
 
 
 def inspect_object(obj, name: str, depth: int = 0, seen=None) -> None:
@@ -301,6 +510,16 @@ def main() -> None:
     print(f"Vector dimensions: {len(vector)}")
     print(f"HTTPX proxy environment configured: {proxy_configured}")
 
+    # Test DNS, TCP, and optional TLS independently.
+    test_connection_phases(url)
+
+    # Test response-header wait separately from body download.
+    test_httpx_response_phases(
+        url=url,
+        headers=headers,
+        body=body,
+    )
+
     # Test 1: HTTPX with environment settings.
     timed_httpx_test(
         trust_env=True,
@@ -316,6 +535,11 @@ def main() -> None:
         headers=headers,
         body=body,
     )
+    compare_localhost_and_ipv4(
+    url=url,
+    headers=headers,
+    body=body,
+)
 
     # Test 3: Inspect installed SDK and transport.
     print("\n--- SDK TRANSPORT DIAGNOSTICS ---")

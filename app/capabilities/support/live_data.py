@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -52,6 +53,77 @@ _PUBLIC_INTENTS: set[LiveDataIntent] = {
 }
 
 
+# Shared Swabi API HTTP client.
+# httpx.Client supports concurrent use across threads.
+_live_http_client: httpx.Client | None = None
+_live_http_client_lock = threading.Lock()
+
+
+def initialize_live_data_client() -> None:
+    """Create the shared HTTP client during application startup."""
+    global _live_http_client
+
+    with _live_http_client_lock:
+        if _live_http_client is not None:
+            return
+
+        limits = httpx.Limits(
+            max_connections=20,
+            max_keepalive_connections=10,
+            keepalive_expiry=30.0,
+        )
+
+        timeout = httpx.Timeout(LIVE_FETCH_TIMEOUT)
+
+        _live_http_client = httpx.Client(
+            timeout=timeout,
+            limits=limits,
+        )
+
+        log.info(
+            "live_data_http_client_initialized",
+            extra={
+                "event": "live_data_http_client_initialized",
+                "max_connections": 20,
+                "max_keepalive_connections": 10,
+                "keepalive_expiry_seconds": 30,
+            },
+        )
+
+
+def close_live_data_client() -> None:
+    """Close the shared HTTP client during application shutdown."""
+    global _live_http_client
+
+    with _live_http_client_lock:
+        client = _live_http_client
+        _live_http_client = None
+
+        if client is not None:
+            client.close()
+            log.info(
+                "live_data_http_client_closed",
+                extra={"event": "live_data_http_client_closed"},
+            )
+
+
+def _get_live_data_client() -> tuple[httpx.Client, float]:
+    """Return the shared client, creating it lazily if necessary."""
+    started = time.perf_counter()
+
+    if _live_http_client is None:
+        initialize_live_data_client()
+
+    with _live_http_client_lock:
+        client = _live_http_client
+
+    if client is None:
+        raise LiveDataFetchError("Swabi HTTP client is unavailable")
+
+    return client, (time.perf_counter() - started) * 1000
+
+
+
 # ---------------------------------------------------------------------------
 # Transport
 # ---------------------------------------------------------------------------
@@ -77,30 +149,33 @@ def _get(
     total_started = time.perf_counter()
     url = f"{settings.swabi_api_base_url.rstrip('/')}{path}"
 
+    try:
+        client, client_init_ms = _get_live_data_client()
+    except LiveDataFetchError:
+        raise
+    except Exception as exc:
+        raise LiveDataFetchError(
+            f"{path}: HTTP client initialization failed"
+        ) from exc
+
     for attempt in range(1, LIVE_FETCH_MAX_ATTEMPTS + 1):
-        client_init_ms = 0.0
         http_request_ms = 0.0
         attempt_started = time.perf_counter()
 
         try:
-            client_started = time.perf_counter()
+            http_started = time.perf_counter()
 
-            with httpx.Client(timeout=LIVE_FETCH_TIMEOUT) as client:
-                client_init_ms = (
-                    time.perf_counter() - client_started
-                ) * 1000
+            # Authorization and request ID are supplied per request.
+            # Never store user-specific headers on the shared client.
+            resp = client.get(
+                url,
+                headers=_headers(user_jwt),
+                params=params or {},
+            )
 
-                http_started = time.perf_counter()
-
-                resp = client.get(
-                    url,
-                    headers=_headers(user_jwt),
-                    params=params or {},
-                )
-
-                http_request_ms = (
-                    time.perf_counter() - http_started
-                ) * 1000
+            http_request_ms = (
+                time.perf_counter() - http_started
+            ) * 1000
 
             log.info(
                 "live_data_http_timing",
@@ -116,6 +191,7 @@ def _get(
                         (time.perf_counter() - attempt_started) * 1000,
                         2,
                     ),
+                    "shared_client": True,
                 },
             )
             break
@@ -133,6 +209,7 @@ def _get(
                         (time.perf_counter() - attempt_started) * 1000,
                         2,
                     ),
+                    "shared_client": True,
                 },
             )
 
@@ -153,6 +230,7 @@ def _get(
                         (time.perf_counter() - attempt_started) * 1000,
                         2,
                     ),
+                    "shared_client": True,
                 },
             )
             raise LiveDataFetchError(f"{path}: {exc}") from exc
@@ -227,6 +305,7 @@ def _get(
                 (time.perf_counter() - total_started) * 1000,
                 2,
             ),
+            "shared_client": True,
         },
     )
 
