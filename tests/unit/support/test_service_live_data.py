@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.capabilities.support.live_data_classifier import LiveDataIntent
 from app.capabilities.support.schemas import (
     AnswerType,
     LLMAnswerOutput,
@@ -81,6 +82,32 @@ def test_vendor_asking_customer_scope(retriever, patch_version_ok):
     assert r.answer_type == AnswerType.NEEDS_LIVE_DATA
 
 
+def test_llm_classified_cross_role_request_is_blocked_before_fetch(retriever):
+    with (
+        patch("app.capabilities.support.service._get_resolver") as resolver,
+        patch("app.capabilities.support.service.fetch_for_intent") as fetch,
+    ):
+        resolver.return_value.resolve.return_value = MagicMock(
+            intent=LiveDataIntent.VENDOR_WALLET,
+            entities={},
+            source="llm",
+            reason="llm_conf=0.95",
+            use_rag=False,
+        )
+        response = ask(
+            SupportAskRequest(
+                question="Show the provider's wallet balance",
+                audience=Audience.CUSTOMER,
+            ),
+            retriever=retriever,
+            user_jwt="customer-jwt",
+        )
+
+    assert response.answer_type == AnswerType.NEEDS_LIVE_DATA
+    fetch.assert_not_called()
+    retriever.search.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # No JWT -> needs_live_data, no fetch
 # ---------------------------------------------------------------------------
@@ -136,6 +163,9 @@ def test_fetch_success_marks_live_data_used(retriever, patch_version_ok, patch_g
     assert r.live_data_sources == ["GET /api/bookings/my"]
     assert r.retrieval_mode_used == "not_applicable"
     assert r.answer_type == AnswerType.ANSWERED
+    patch_gateway.generate_structured_sync.assert_called_once()
+    patch_version_ok.assert_not_called()
+    retriever.search.assert_not_called()
 
 
 def test_wallet_balance_uses_live_data_without_rag(retriever, patch_version_ok, patch_gateway):
@@ -165,6 +195,8 @@ def test_wallet_balance_uses_live_data_without_rag(retriever, patch_version_ok, 
     assert response.live_data_sources == ["GET /api/wallet/me/balance"]
     assert response.retrieval_mode_used == "not_applicable"
     retriever.search.assert_not_called()
+    patch_gateway.generate_structured_sync.assert_called_once()
+    patch_version_ok.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -407,6 +439,12 @@ def test_booking_detail_uses_live_data_without_rag_chunks(
             "currency": "INR",
         }
     }
+    patch_gateway.generate_structured_sync.return_value = LLMAnswerOutput(
+        answer_type=AnswerType.ANSWERED,
+        answer="Booking BK-8941 is upcoming from 1–7 November 2026.",
+        citation_chunk_ids=[],
+        confidence=0.93,
+    )
 
     with patch(
         "app.capabilities.support.service.fetch_for_intent",
@@ -426,13 +464,14 @@ def test_booking_detail_uses_live_data_without_rag_chunks(
     assert result.live_data_sources == ["GET /api/bookings/my/{id}"]
     assert "upcoming" in result.answer.lower()
     retriever.search.assert_not_called()
+    patch_version_ok.assert_not_called()
+    patch_gateway.generate_structured_sync.assert_called_once()
+    prompt = patch_gateway.generate_structured_sync.call_args.kwargs["prompt"]
+    assert "BK-8941" in prompt
+    assert "Booking status: upcoming" in prompt
 
-    assert "BK-8941" in result.answer
-    assert "- Booking status: upcoming" in result.answer
-    patch_gateway.generate_structured_sync.assert_not_called()
 
-
-def test_booking_detail_answer_does_not_depend_on_llm_output(
+def test_live_data_generation_failure_uses_verified_live_facts(
     retriever, patch_version_ok, patch_gateway
 ):
     booking_id = "46f46148-e88d-42b6-bbd4-d87f14009f65"
@@ -451,6 +490,7 @@ def test_booking_detail_answer_does_not_depend_on_llm_output(
             "currency": "INR",
         }
     }
+    patch_gateway.generate_structured_sync.side_effect = RuntimeError("provider unavailable")
 
     with patch(
         "app.capabilities.support.service.fetch_for_intent",
@@ -470,5 +510,322 @@ def test_booking_detail_answer_does_not_depend_on_llm_output(
     assert result.live_data_sources == ["GET /api/bookings/my/{id}"]
     assert "BK-8941" in result.answer
     assert "upcoming" in result.answer.lower()
+    assert result.live_data_warning is not None
+    assert not result.answer.startswith("I retrieved your current Swabi information")
     retriever.search.assert_not_called()
-    patch_gateway.generate_structured_sync.assert_not_called()
+    patch_version_ok.assert_not_called()
+    patch_gateway.generate_structured_sync.assert_called_once()
+
+
+def test_insufficient_model_answer_uses_conversational_live_catalogue_fallback(
+    retriever, patch_version_ok, patch_gateway
+):
+    packages = [
+        {
+            "packageCode": f"PKG-{index}",
+            "title": f"Tour {index}",
+            "destination": "Goa",
+            "price": index * 1000,
+            "currency": "INR",
+        }
+        for index in range(1, 3)
+    ]
+    with (
+        patch("app.capabilities.support.service._get_resolver") as resolver,
+        patch(
+            "app.capabilities.support.service.fetch_for_intent",
+            return_value=(
+                "GET /api/packages",
+                {"packages": packages, "total": 13},
+            ),
+        ),
+    ):
+        resolver.return_value.resolve.return_value = MagicMock(
+            intent=LiveDataIntent.PACKAGE_SEARCH,
+            entities={},
+            source="llm",
+            reason="llm_conf=0.95",
+            use_rag=False,
+            requested_limit=2,
+        )
+        patch_gateway.generate_structured_sync.return_value = LLMAnswerOutput(
+            answer_type=AnswerType.INSUFFICIENT_CONTEXT,
+            answer="",
+            citation_chunk_ids=[],
+            confidence=0.2,
+        )
+        response = ask(
+            SupportAskRequest(
+                question="Show me only two packages",
+                audience=Audience.CUSTOMER,
+            ),
+            retriever=retriever,
+        )
+
+    assert response.answer_type == AnswerType.ANSWERED
+    assert response.answer.startswith(
+        "I found 13 packages in the catalogue. Here are 2 to get you started:"
+    )
+    assert response.answer.count("\n- ") == 2
+    assert "I found your live information" not in response.answer
+    assert "Tour 3" not in response.answer
+    assert response.live_data_used is True
+    patch_version_ok.assert_not_called()
+    retriever.search.assert_not_called()
+
+
+def test_requested_limit_is_applied_to_packages_and_generation_context(
+    retriever, patch_version_ok, patch_gateway
+):
+    packages = [
+        {
+            "packageCode": f"PKG-{index}",
+            "title": f"Tour {index}",
+            "destination": "Goa",
+            "price": index * 1000,
+            "currency": "INR",
+        }
+        for index in range(1, 4)
+    ]
+    with (
+        patch("app.capabilities.support.service._get_resolver") as resolver,
+        patch(
+            "app.capabilities.support.service.fetch_for_intent",
+            return_value=(
+                "GET /api/packages",
+                {"packages": packages, "total": 13},
+            ),
+        ) as fetch,
+    ):
+        resolver.return_value.resolve.return_value = MagicMock(
+            intent=LiveDataIntent.PACKAGE_SEARCH,
+            entities={"query": "Goa"},
+            source="llm",
+            reason="",
+            use_rag=False,
+            requested_limit=2,
+        )
+        patch_gateway.generate_structured_sync.return_value = LLMAnswerOutput(
+            answer_type=AnswerType.ANSWERED,
+            answer="Here are two Goa packages:\n- Tour 1\n- Tour 2",
+            citation_chunk_ids=[],
+            confidence=0.95,
+        )
+        response = ask(
+            SupportAskRequest(
+                question="provide me only 2 packages available in this platform",
+                audience=Audience.CUSTOMER,
+            ),
+            retriever=retriever,
+        )
+
+    assert response.answer == "Here are two Goa packages:\n- Tour 1\n- Tour 2"
+    assert fetch.call_args.kwargs["entities"] == {"query": "Goa", "limit": 2}
+    prompt = patch_gateway.generate_structured_sync.call_args.kwargs["prompt"]
+    assert "REQUESTED RESULT LIMIT: 2" in prompt
+    assert "Tour 1" in prompt and "Tour 2" in prompt
+    assert "Tour 3" not in prompt
+    assert "13 packages" in prompt
+    assert "Here are 2 to get you started" in prompt
+    assert "Before a result list, add one short, natural lead-in" in (
+        patch_gateway.generate_structured_sync.call_args.kwargs["system"]
+    )
+    patch_version_ok.assert_not_called()
+    retriever.search.assert_not_called()
+
+
+def test_requested_limit_is_applied_to_payment_history(
+    retriever, patch_version_ok, patch_gateway
+):
+    payments = [
+        {
+            "createdAt": f"2026-10-{day:02d}T00:00:00Z",
+            "amount": day * 100,
+            "currency": "INR",
+            "status": "completed",
+        }
+        for day in range(1, 4)
+    ]
+    with (
+        patch("app.capabilities.support.service._get_resolver") as resolver,
+        patch(
+            "app.capabilities.support.service.fetch_for_intent",
+            return_value=("GET /api/payments/my-payments", {"payments": payments, "total": 20}),
+        ),
+    ):
+        resolver.return_value.resolve.return_value = MagicMock(
+            intent=LiveDataIntent.MY_PAYMENTS,
+            entities={},
+            source="llm",
+            reason="",
+            use_rag=False,
+            requested_limit=2,
+        )
+        patch_gateway.generate_structured_sync.return_value = LLMAnswerOutput(
+            answer_type=AnswerType.ANSWERED,
+            answer="Your two latest payments:\n- INR 100\n- INR 200",
+            citation_chunk_ids=[],
+            confidence=0.95,
+        )
+        response = ask(
+            SupportAskRequest(
+                question="Show me my last two payment history",
+                audience=Audience.CUSTOMER,
+            ),
+            retriever=retriever,
+            user_jwt="test-user-jwt",
+        )
+
+    assert response.answer.startswith("Your two latest payments")
+    prompt = patch_gateway.generate_structured_sync.call_args.kwargs["prompt"]
+    assert prompt.count("status=completed") == 2
+    assert "03 Oct 2026" not in prompt
+    assert "REQUESTED RESULT LIMIT: 2" in prompt
+    patch_version_ok.assert_not_called()
+    retriever.search.assert_not_called()
+
+
+def test_unspecified_payment_history_is_summarized_from_available_records(
+    retriever, patch_version_ok, patch_gateway
+):
+    payments = [
+        {
+            "createdAt": f"2026-10-{day:02d}T00:00:00Z",
+            "amount": day * 100,
+            "currency": "INR",
+            "status": "completed" if day % 2 else "pending",
+        }
+        for day in range(1, 21)
+    ]
+    with (
+        patch("app.capabilities.support.service._get_resolver") as resolver,
+        patch(
+            "app.capabilities.support.service.fetch_for_intent",
+            return_value=(
+                "GET /api/payments/my-payments",
+                {"payments": payments, "total": len(payments)},
+            ),
+        ),
+    ):
+        resolver.return_value.resolve.return_value = MagicMock(
+            intent=LiveDataIntent.MY_PAYMENTS,
+            entities={},
+            source="deterministic",
+            reason="customer transaction history",
+            use_rag=False,
+            requested_limit=None,
+        )
+        patch_gateway.generate_structured_sync.return_value = LLMAnswerOutput(
+            answer_type=AnswerType.ANSWERED,
+            answer=(
+                "I found 20 payment records, with completed and pending "
+                "payments. Would you like the latest five, or a date or "
+                "status filter?"
+            ),
+            citation_chunk_ids=[],
+            confidence=0.95,
+        )
+        response = ask(
+            SupportAskRequest(
+                question="Show my transaction history",
+                audience=Audience.CUSTOMER,
+            ),
+            retriever=retriever,
+            user_jwt="test-user-jwt",
+        )
+
+    assert response.answer.startswith("I found 20 payment records")
+    assert "latest five" in response.answer
+    prompt = patch_gateway.generate_structured_sync.call_args.kwargs["prompt"]
+    assert prompt.count("status=") == 20
+    assert "PAYMENT HISTORY SUMMARY MODE" in prompt
+    assert "20 of 20" in prompt
+    patch_version_ok.assert_not_called()
+    retriever.search.assert_not_called()
+
+
+def test_generated_live_list_that_ignores_limit_falls_back_to_exact_facts(
+    retriever, patch_version_ok, patch_gateway
+):
+    packages = [
+        {
+            "packageCode": f"PKG-{index}",
+            "title": f"Tour {index}",
+            "destination": "Goa",
+            "price": index * 1000,
+            "currency": "INR",
+        }
+        for index in range(1, 4)
+    ]
+    with (
+        patch("app.capabilities.support.service._get_resolver") as resolver,
+        patch(
+            "app.capabilities.support.service.fetch_for_intent",
+            return_value=(
+                "GET /api/packages",
+                {"packages": packages, "total": 13},
+            ),
+        ),
+    ):
+        resolver.return_value.resolve.return_value = MagicMock(
+            intent=LiveDataIntent.PACKAGE_SEARCH,
+            entities={},
+            source="llm",
+            reason="",
+            use_rag=False,
+            requested_limit=2,
+        )
+        patch_gateway.generate_structured_sync.return_value = LLMAnswerOutput(
+            answer_type=AnswerType.ANSWERED,
+            answer="Here are five:\n- Tour A\n- Tour B\n- Tour C\n- Tour D\n- Tour E",
+            citation_chunk_ids=[],
+            confidence=0.95,
+        )
+        response = ask(
+            SupportAskRequest(
+                question="Show me only two packages",
+                audience=Audience.CUSTOMER,
+            ),
+            retriever=retriever,
+        )
+
+    assert response.answer.count("\n- ") == 2
+    assert "Tour 1" in response.answer
+    assert "Tour 2" in response.answer
+    assert "Tour 3" not in response.answer
+
+
+def test_empty_live_catalogue_cannot_be_filled_with_generated_records(
+    retriever, patch_version_ok, patch_gateway
+):
+    with (
+        patch("app.capabilities.support.service._get_resolver") as resolver,
+        patch(
+            "app.capabilities.support.service.fetch_for_intent",
+            return_value=("GET /api/packages", {"packages": [], "total": 0}),
+        ),
+    ):
+        resolver.return_value.resolve.return_value = MagicMock(
+            intent=LiveDataIntent.PACKAGE_SEARCH,
+            entities={},
+            source="llm",
+            reason="",
+            use_rag=False,
+            requested_limit=2,
+        )
+        patch_gateway.generate_structured_sync.return_value = LLMAnswerOutput(
+            answer_type=AnswerType.ANSWERED,
+            answer="Here is a package:\n- Surprise Goa Tour",
+            citation_chunk_ids=[],
+            confidence=0.95,
+        )
+        response = ask(
+            SupportAskRequest(
+                question="Show me two packages in Goa",
+                audience=Audience.CUSTOMER,
+            ),
+            retriever=retriever,
+        )
+
+    assert "couldn't find any packages" in response.answer.lower()
+    assert "Surprise Goa Tour" not in response.answer

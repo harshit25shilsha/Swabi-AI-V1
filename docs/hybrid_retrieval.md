@@ -53,6 +53,11 @@ It embeds a query and normalizes its vector. At ingestion, the same model
 embeds passages. Qdrant's cosine similarity ranks chunks by semantic
 similarity to the query vector.
 
+Before retrieval, support query preparation expands documented multi-step
+booking questions and broad Swabi/platform definition questions into the
+canonical concepts in the approved knowledge source. The original question
+is still sent to answer generation; expansions only improve retrieval.
+
 ### 3. Dense search
 
 `QdrantStore.search` sends the query vector to Qdrant. Qdrant applies the
@@ -112,27 +117,33 @@ These are ranking signals, not probabilities or calibrated confidence.
 
 ## End-to-end request workflow
 
-1. **Resolve what kind of question this is.** The support service routes live
-   business questions to authorized Swabi APIs when appropriate. RAG is for
-   stable knowledge, not current bookings, wallet balances, or live bids.
-   Successful live API responses are rendered from allowlisted fields by
-   deterministic formatters; they do not depend on an LLM call. This keeps
-   current facts grounded in the API and avoids spending Groq tokens to
-   rephrase data the service already knows how to present.
-2. **Verify knowledge authority.** Before answering from RAG, the service
+1. **Resolve what kind of question this is.** Deterministic audience-scope
+   guards and explicit-ID fast paths run first. The LLM semantically resolves
+   live-data and catalogue list requests, using bounded recent conversation
+   turns for follow-ups. The application—not the LLM—enforces authorization
+   and selects the Swabi API. Stable knowledge questions use RAG; current
+   bookings, wallet balances, and bids use authorized live APIs.
+2. **Enforce requested list limits.** Apply a user-requested count to the
+   supported catalogue API page size and to allowlisted list data before it
+   reaches generation. If the answer model returns the wrong number of list
+   items, the service uses the exact trimmed live facts instead.
+   Unspecified payment-history requests are summarized from up to 20 returned
+   records, with a follow-up offer to show the latest five or filter by
+   date/status; other list intents retain the five-record default.
+3. **Verify knowledge authority.** Before answering from RAG, the service
    checks that the Qdrant alias points at the version named by local
    `CURRENT`. If they disagree, the service fails closed rather than serve
    stale policy.
-3. **Pin retrieval to that version.** The verified version is passed to the
+4. **Pin retrieval to that version.** The verified version is passed to the
    retriever. Both searches target the same versioned collection, preventing
    dense and BM25 from mixing different published indexes.
-4. **Prepare and embed the retrieval query.** Known general process patterns
+5. **Prepare and embed the retrieval query.** Known general process patterns
    can be expanded into canonical retrieval wording; package-booking questions
-   currently map to the documented enquiry/bidding workflow. The original
-   question is still sent to the answer model. FastEmbed embeds the prepared
-   query; an empty query returns no results and embedding failures become
-   retrieval errors.
-5. **Apply the same eligibility rules to both methods.** Qdrant filters
+   currently map to the documented enquiry/bidding workflow. The question and
+   bounded recent conversation are sent to the answer model. FastEmbed embeds
+   the prepared query; an empty query returns no results and embedding failures
+   become retrieval errors.
+6. **Apply the same eligibility rules to both methods.** Qdrant filters
    audience, area, and current policy lifecycle before ranking:
    - A customer search matches `customer` and `both`; it excludes
      vendor-only chunks.
@@ -140,17 +151,18 @@ These are ranking signals, not probabilities or calibrated confidence.
    - An area such as `swabi` or `travel` also matches chunks marked `both`.
    - Non-policy chunks marked `not_applicable` are eligible. Policy chunks
      must be approved, effective today, and not expired.
-6. **Retrieve candidates from each method.** With requested result count
+7. **Retrieve candidates from each method.** With requested result count
    `k`, each search requests `k * candidate_multiplier` candidates. The
    production default multiplier is 4. Dense search also applies its
    configured minimum score; BM25 ranks its filtered corpus.
-7. **Fuse the ranked lists.** RRF combines the two candidate lists using the
+8. **Fuse the ranked lists.** RRF combines the two candidate lists using the
    configured rank constant (60 by default), deduplicates by chunk ID, and
    returns at most `k` chunks.
-8. **Generate and validate the answer.** The support service supplies the
-   retrieved text to the answer model. It validates citations against the
-   retrieved IDs and returns a safe insufficient-context response if
-   retrieval fails or yields no chunks.
+9. **Generate and validate the answer.** The support service supplies
+   allowlisted live data and retrieved text to the answer model. It validates
+   citations against retrieved IDs and returns a safe insufficient-context
+   response if retrieval fails or yields no chunks. Live-only requests skip
+   Qdrant and knowledge-version checks.
 
 When retrieval cannot support an answer, the fallback suggests relevant
 customer or vendor app areas (for example, vendors can check New Enquiries,

@@ -1,8 +1,8 @@
 # Swabi AI Service — Architecture
 
 **Status:** Chat Safety + Phase 1 (Enquiry Understanding) + Phase 2 AI
-Support implementation; Phase 2 acceptance is in progress
-**Last updated:** October 2026
+Support/RAG feature scope integrated; broader production rollout checks remain
+**Last updated:** November 2026
 **Audience:** Engineers working on the Swabi AI service or integrating a
 new AI capability.
 
@@ -610,9 +610,17 @@ an explicit error.
 | Structured answer is truncated | Gateway retries once with an increased completion budget, capped at 4,096 tokens. |
 | LLM answer cites no retrieved chunks or only unknown IDs | Fail closed to `insufficient_context`; mixed valid/invalid citations retain only valid IDs. |
 
-Successful live API responses are formatted from allowlisted fields and
-returned without an answer-generation LLM call. This protects live answers
-from LLM formatting failures and avoids unnecessary provider tokens.
+Successful live API responses are passed through allowlisted field formatters
+to the answer-generation LLM, which produces the user-facing response. List
+limits are applied before generation and validated against the generated list;
+if the model ignores the requested count, the service returns the trimmed
+allowlisted facts. Live-only requests do not initialize RAG or perform a
+knowledge-version check. Authentication and audience-scope checks remain
+deterministic and run before any private API fetch.
+Obvious unfiltered public catalogue-list requests use a deterministic fast
+path to avoid a classification call; contextual or destination-dependent
+requests use semantic classification. Live API calls use a five-second
+per-attempt timeout with at most one retry.
 
 ### Extending
 
@@ -654,16 +662,33 @@ remains responsible for authorization and business state.
 
 The service resolves an intent before retrieving knowledge:
 
-1. Deterministic patterns recognize supported customer/vendor data and
-   public catalogue intents.
-2. Ambiguous likely-live requests can use the intent classifier.
+1. Deterministic checks handle security, role scope, explicit IDs, validation,
+   and narrow fast paths. They do not authorize a request based on an LLM
+   classification.
+2. The hybrid resolver uses the LLM to understand supported customer/vendor
+   intents and varied phrasings when a deterministic fast path does not apply.
+   The application maps the result to an allowlisted capability.
 3. Audience checks prevent cross-role access; private intents require a JWT.
-4. A successful live API response is formatted using allowlisted fields and
-   returned directly. No answer-generation LLM call is used for live-only
-   results.
-5. Stable policy or workflow questions use the approved RAG corpus. A
-   question with neither supported live intent nor adequate evidence fails
-   safely and gives audience-specific app guidance.
+   NestJS remains authoritative for user authorization and business data.
+4. Live responses are formatted to allowlisted fields and passed with the
+   user's request and relevant conversation context to answer generation.
+   The answer model is instructed to use the supplied live facts, not to
+   treat itself as a source of current account data. Explicit list limits are
+   enforced before generation and checked afterward; if generation violates
+   a requested count, the service returns the trimmed verified facts.
+5. Stable policy and workflow questions use approved RAG evidence, which is
+   included in grounded answer generation with citations. Unsupported
+   questions fail safely with audience-specific guidance rather than
+   invented facts.
+
+The request may include up to 10 recent user/assistant turns to resolve
+follow-ups. Context helps interpret references and constraints but cannot
+change the authenticated identity, audience, or access scope. Broad payment
+history requests may summarize up to 20 available records when no count is
+specified; other unspecified lists default to five. Live-only requests avoid
+RAG/Qdrant checks, and obvious unfiltered catalogue-list requests avoid an
+intent-classifier call. Contextual or destination-filtered catalogue requests
+still use semantic classification.
 
 Live transport currently resides in
 `app/capabilities/support/live_data.py`. It calls NestJS, forwards the JWT
@@ -729,18 +754,27 @@ with later cases.
 
 ### Phase 2 status
 
-Phase 2 implementation is substantially present, but acceptance remains
-open. Before sign-off:
+The RAG customer-support feature scope is complete for the current phase. The
+platform overview knowledge update was published as version
+`48fa84f6d107`, indexed in Qdrant, and smoke-tested; `CURRENT` and the Qdrant
+alias matched, and the overview question returned the new grounded content.
+The latest recorded full test run passed 769 tests with 44 deselected.
 
-- Rerun grounding after the latest code changes and review citations,
-  unsupported answers, and judge coverage.
-- Verify real NestJS endpoint shapes, auth forwarding, decryption, empty
-  results, and error handling across customer, vendor, and public intents.
-- Exercise a policy update/index promotion and verify stale-version rejection
-  and activation of the new version.
-- Run combined regression and deployment checks for latency, configuration,
-  secrets, logging, and service behavior.
+This feature-phase completion is not a blanket production certification. The
+latest grounding report predates later answer-generation and support changes:
+it reported semantic judge coverage of 0.467 (8 judge errors), citation
+precision of 0.700, and citation recall of 0.716. Rerun grounding against the
+current code and review its per-case results before using those metrics as a
+release gate. Also verify real NestJS endpoint shapes, JWT forwarding,
+decryption, empty results, and error behavior in the target environment, and
+run deployment-specific latency/configuration/logging checks. Unit tests and
+the local Qdrant smoke test do not establish those external contracts.
 
-These are release/acceptance checks; unit-test success alone does not prove
-the live NestJS deployment contract. Phase 3 (Bid and Offer Analyzer) should
-start after these checks are accepted.
+To publish a knowledge update, run `python -m scripts.rag_ingest --release`,
+then index the reported version with
+`python -m scripts.rag_index --version <version>`. Confirm that
+`data/rag_index/CURRENT` and the Qdrant alias resolve to the same version
+before accepting RAG traffic; the service fails closed when they disagree.
+Coordinate these steps with deployment because the two authorities are
+updated separately. The active development index when this status was
+recorded was `48fa84f6d107`.

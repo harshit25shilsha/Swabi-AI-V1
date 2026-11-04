@@ -17,9 +17,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.core.config import settings
-from app.rag.embeddings import EmbeddingModel
-from app.rag.qdrant_store import QdrantStore, _retrieval_filter
+from app.core.config import settings  # noqa: E402
+from app.rag.embeddings import EmbeddingModel  # noqa: E402
+from app.rag.qdrant_store import QdrantStore, _retrieval_filter  # noqa: E402
 
 QUERY = "what is the cancellation policy in this platform?"
 AUDIENCE = "customer"
@@ -60,7 +60,7 @@ def test_connection_phases(url: str) -> None:
             addresses,
             start=1,
         ):
-            
+
             connection = socket.socket(family, socktype, proto)
             connection.settimeout(5)
 
@@ -81,8 +81,8 @@ def test_connection_phases(url: str) -> None:
                 )
 
             finally:
-                connection.close()   
-        
+                connection.close()
+
 
         print(f"Resolved host: {host}")
         print(f"Resolved address count: {len(addresses)}")
@@ -212,7 +212,7 @@ def test_httpx_response_phases(
             finally:
                 if response is not None:
                     response.close()
-          
+
 def compare_localhost_and_ipv4(
     *,
     url: str,
@@ -263,7 +263,7 @@ def compare_localhost_and_ipv4(
                     f"Request {i} failed: "
                     f"{type(exc).__name__}: {exc}"
                 )
-         
+
 
 
 def inspect_object(obj, name: str, depth: int = 0, seen=None) -> None:

@@ -1,16 +1,4 @@
-"""Combine deterministic and LLM intent classification.
-
-Order:
-  1. Deterministic classifier runs first. Fast, cheap, deterministic.
-     - Hit -> use it, skip the LLM.
-     - Scope mismatch -> preserve the reason so the service can produce
-       the right message. Do NOT consult the LLM.
-     - No match -> consult the LLM only for likely account/live-data or
-       public-catalogue requests; ordinary knowledge questions go to RAG.
-  2. LLM classifier runs only on "no match". Returns a structured intent
-     with confidence. On LLM failure or low confidence, fall through to
-     NONE (RAG path).
-"""
+"""Resolve support intent semantically while keeping deterministic scope guards."""
 
 from __future__ import annotations
 
@@ -30,11 +18,15 @@ from app.capabilities.support.live_data_classifier import (
 from app.capabilities.support.live_data_classifier import (
     classify as classify_deterministic,
 )
+from app.capabilities.support.schemas import (
+    MAX_SUPPORT_LIST_ITEMS,
+    ConversationTurn,
+)
 
 log = logging.getLogger(__name__)
 
 _PERSONAL_DATA_SUBJECT = re.compile(
-    r"\b(bookings?|trips?|payments?|bids?|enquir(?:y|ies)|"
+    r"\b(bookings?|trips?|payments?|transactions?|bids?|enquir(?:y|ies)|"
     r"coins?|wallet|withdrawals?|subscription|plan)\b",
     re.IGNORECASE,
 )
@@ -52,44 +44,75 @@ _CATALOGUE_REQUEST = re.compile(
     r"october|november|december|budget|price|family|children|travelers?)\b",
     re.IGNORECASE,
 )
-_POPULAR_DESTINATIONS = re.compile(r"\b(popular|trending)\s+destinations?\b", re.IGNORECASE)
 _DIRECT_PACKAGE_SEARCH = re.compile(
     r"\b(?:show|list|provide|find|search|browse|get|recommend|need|want)\b"
     r".{0,80}\b(?:packages?|tours?)\b"
     r"|\b(?:packages?|tours?)\b.{0,80}\b"
-    r"(?:available|bookable|show|list|find|search|browse)\b"
-    r"|\b(?:packages?|tours?)\b.{0,80}\b"
-    r"(?:for|in|during|around|near|under|between|winter|summer|spring|"
-    r"autumn|fall|january|february|march|april|may|june|july|august|"
-    r"september|october|november|december|budget|price|family|children|"
-    r"travelers?)\b",
+    r"(?:available|bookable|show|list|find|search|browse)\b",
     re.IGNORECASE,
 )
-_PACKAGE_DESTINATION_HINT = re.compile(
-    r"\b(?:in|to|near|around)\s+([a-z][a-z -]{1,35})",
+_PACKAGE_FILTER_HINT = re.compile(
+    r"\b(?:for|during|around|near|under|between|winter|summer|spring|autumn|"
+    r"fall|january|february|march|april|may|june|july|august|september|"
+    r"october|november|december|budget|price|family|children|travelers?)\b",
     re.IGNORECASE,
 )
-_NON_DESTINATION_HINTS = {
-    "winter",
-    "summer",
-    "spring",
-    "autumn",
-    "fall",
-    "january",
-    "february",
-    "march",
-    "april",
-    "may",
-    "june",
-    "july",
-    "august",
-    "september",
-    "october",
-    "november",
-    "december",
-    "the",
-    "swabi",
+_PACKAGE_LOCATION_HINT = re.compile(
+    r"\b(?:in|to|near|around|for)\s+([a-z][a-z -]{1,35})",
+    re.IGNORECASE,
+)
+_NON_LOCATION_TERMS = {"the", "this", "that", "swabi", "platform"}
+_POPULAR_DESTINATIONS = re.compile(r"\b(popular|trending)\s+destinations?\b", re.IGNORECASE)
+
+
+_LIST_INTENTS = {
+    LiveDataIntent.MY_BOOKINGS,
+    LiveDataIntent.MY_PAYMENTS,
+    LiveDataIntent.MY_ENQUIRY_BIDS,
+    LiveDataIntent.MY_COIN_HISTORY,
+    LiveDataIntent.MY_ENQUIRIES,
+    LiveDataIntent.PACKAGE_SEARCH,
+    LiveDataIntent.ACTIVITY_SEARCH,
+    LiveDataIntent.POPULAR_DESTINATIONS,
+    LiveDataIntent.VENDOR_TRANSACTIONS,
+    LiveDataIntent.VENDOR_WITHDRAWALS,
+    LiveDataIntent.VENDOR_INQUIRIES,
+    LiveDataIntent.VENDOR_BOOKINGS,
+    LiveDataIntent.VENDOR_BIDS,
 }
+
+_COUNT_WORDS = {
+    "one": 1,
+    "a": 1,
+    "an": 1,
+    "two": 2,
+    "couple": 2,
+    "pair": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "thirteen": 13,
+    "fourteen": 14,
+    "fifteen": 15,
+    "sixteen": 16,
+    "seventeen": 17,
+    "eighteen": 18,
+    "nineteen": 19,
+    "twenty": 20,
+}
+_RESULT_NOUNS = re.compile(
+    r"\b(packages?|tours?|payments?|bookings?|trips?|bids?|transactions?|"
+    r"activities?|destinations?|enquir(?:y|ies)|withdrawals?|results?|options?|items?)\b",
+    re.IGNORECASE,
+)
+_COUNT_TOKEN = re.compile(r"\b(?P<count>\d{1,2}|[a-z]+)\b", re.IGNORECASE)
 
 
 def _may_need_live_intent_resolution(question: str) -> bool:
@@ -105,6 +128,50 @@ def _may_need_live_intent_resolution(question: str) -> bool:
     )
 
 
+def _extract_requested_limit(question: str) -> int | None:
+    """Extract a plainly stated count as a safe fallback if the LLM is unavailable."""
+    for match in _COUNT_TOKEN.finditer(question):
+        prefix = question[max(0, match.start() - 24) : match.start()]
+        suffix = question[match.end() : match.end() + 40]
+        if re.search(r"\b(?:under|below|less than|budget|price|cost)\s*$", prefix, re.I):
+            continue
+        if re.match(r"\s+(?:couple|pair)\b", suffix, re.I):
+            continue
+        if re.match(
+            r"\s*(?:people|persons|travelers?|travellers?|adults?|children|days?|nights?)\b",
+            suffix,
+            re.I,
+        ):
+            continue
+        if not _RESULT_NOUNS.search(suffix):
+            continue
+        token = match.group("count").lower()
+        try:
+            count = int(token)
+        except ValueError:
+            count = _COUNT_WORDS.get(token, 0)
+        if 1 <= count <= MAX_SUPPORT_LIST_ITEMS:
+            return count
+    return None
+
+
+def _requested_limit_from_result(
+    result: Any,
+    question: str,
+) -> int | None:
+    limit = getattr(result, "requested_limit", None)
+    if limit is None:
+        limit = result.entities.get("limit")
+    if isinstance(limit, int) and not isinstance(limit, bool):
+        if 1 <= limit <= MAX_SUPPORT_LIST_ITEMS:
+            return limit
+    elif isinstance(limit, str) and limit.isdecimal():
+        parsed = int(limit)
+        if 1 <= parsed <= MAX_SUPPORT_LIST_ITEMS:
+            return parsed
+    return _extract_requested_limit(question)
+
+
 @dataclass
 class ResolvedIntent:
     intent: LiveDataIntent
@@ -112,13 +179,19 @@ class ResolvedIntent:
     source: str = "deterministic"  # "deterministic" | "llm" | "none"
     reason: str = ""
     use_rag: bool = False
+    requested_limit: int | None = None
 
 
 class IntentResolver:
     def __init__(self, llm_classifier: LLMIntentClassifier | None = None) -> None:
         self.llm = llm_classifier or LLMIntentClassifier()
 
-    def resolve(self, question: str, audience: str) -> ResolvedIntent:
+    def resolve(
+        self,
+        question: str,
+        audience: str,
+        conversation_history: list[ConversationTurn] | None = None,
+    ) -> ResolvedIntent:
         det = classify_deterministic(question, audience)
         knowledge_requested = is_general_process_question(question)
         live_data_requested = is_live_data_question(question)
@@ -142,7 +215,9 @@ class IntentResolver:
                 reason="general_process_question",
             )
 
-        if det.intent != LiveDataIntent.NONE:
+        # Exact detail lookups are a safe fast path; list/search requests are
+        # classified semantically so limits and contextual filters are retained.
+        if det.intent not in _LIST_INTENTS and det.intent != LiveDataIntent.NONE:
             return ResolvedIntent(
                 intent=det.intent,
                 entities=det.entities,
@@ -151,31 +226,68 @@ class IntentResolver:
                 use_rag=knowledge_requested,
             )
 
-        direct_package_search = _DIRECT_PACKAGE_SEARCH.search(question) is not None
-        needs_entity_extraction = any(
-            match.group(1).strip().lower().split()[0] not in _NON_DESTINATION_HINTS
-            and not match.group(1).strip().lower().startswith("swabi platform")
-            for match in _PACKAGE_DESTINATION_HINT.finditer(question)
-        )
-
-        if direct_package_search and not needs_entity_extraction:
+        if (
+            det.intent == LiveDataIntent.MY_PAYMENTS
+            and det.reason == "customer transaction history"
+            and not conversation_history
+        ):
             return ResolvedIntent(
-                intent=LiveDataIntent.PACKAGE_SEARCH,
+                intent=det.intent,
+                entities=det.entities,
                 source="deterministic",
-                reason="public_package_search",
+                reason=det.reason,
+                use_rag=knowledge_requested,
+                requested_limit=_extract_requested_limit(question),
             )
 
-        if not _may_need_live_intent_resolution(question) and not direct_package_search:
+        location_matches = [
+            match.group(1).strip().lower().split()[0]
+            for match in _PACKAGE_LOCATION_HINT.finditer(question)
+        ]
+        has_unresolved_location = any(
+            location not in _NON_LOCATION_TERMS for location in location_matches
+        )
+        if (
+            det.intent == LiveDataIntent.NONE
+            and not conversation_history
+            and not knowledge_requested
+            and _DIRECT_PACKAGE_SEARCH.search(question)
+            and not has_unresolved_location
+            and not _PACKAGE_FILTER_HINT.search(question)
+        ):
+            return ResolvedIntent(
+                intent=LiveDataIntent.PACKAGE_SEARCH,
+                entities={"query": ""},
+                source="deterministic",
+                reason="unfiltered_package_search_fast_path",
+                requested_limit=_extract_requested_limit(question),
+            )
+
+        candidate = (
+            det.intent in _LIST_INTENTS
+            or _may_need_live_intent_resolution(question)
+            or bool(conversation_history)
+        )
+        if not candidate:
             return ResolvedIntent(
                 intent=LiveDataIntent.NONE,
                 source="none",
                 reason="not_live_intent_candidate",
             )
 
-        # A plausible live-data or catalogue request did not match a
-        # deterministic pattern; use the LLM to resolve the ambiguity.
-        llm_result = self.llm.classify(question, audience)
-        if llm_result is not None and llm_result.intent != LiveDataIntent.NONE:
+        llm_result = self.llm.classify(
+            question,
+            audience,
+            conversation_history=conversation_history,
+        )
+        if llm_result is not None:
+            if llm_result.intent == LiveDataIntent.NONE:
+                return ResolvedIntent(
+                    intent=LiveDataIntent.NONE,
+                    source="llm",
+                    reason="llm_none",
+                    use_rag=knowledge_requested,
+                )
             log.info(
                 "intent_resolver_llm_hit",
                 extra={
@@ -190,17 +302,32 @@ class IntentResolver:
                 source="llm",
                 reason=f"llm_conf={llm_result.confidence:.2f}",
                 use_rag=knowledge_requested,
+                requested_limit=_requested_limit_from_result(
+                    llm_result,
+                    question,
+                ),
             )
 
-        if direct_package_search:
+        if det.intent != LiveDataIntent.NONE:
+            return ResolvedIntent(
+                intent=det.intent,
+                entities=det.entities,
+                source="deterministic",
+                reason=det.reason or "deterministic_fallback",
+                use_rag=knowledge_requested,
+                requested_limit=_extract_requested_limit(question),
+            )
+
+        if _DIRECT_PACKAGE_SEARCH.search(question) and not has_unresolved_location:
             return ResolvedIntent(
                 intent=LiveDataIntent.PACKAGE_SEARCH,
                 source="deterministic",
-                reason="public_package_search",
+                reason="catalogue_search_fallback",
+                requested_limit=_extract_requested_limit(question),
             )
 
         return ResolvedIntent(
             intent=LiveDataIntent.NONE,
-            source="llm" if llm_result else "none",
-            reason="llm_none" if llm_result else "llm_unavailable",
+            source="none",
+            reason="llm_unavailable",
         )

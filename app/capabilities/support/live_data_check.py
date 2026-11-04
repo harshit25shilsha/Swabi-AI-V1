@@ -16,9 +16,10 @@ _CURRENT_STATE_PATTERNS: tuple[re.Pattern[str], ...] = (
     # Explicit status or history requests.
     re.compile(
         r"\b(status|history|transactions?)\s+(of|for)\s+(my\s+)?"
-        r"(booking|bid|order|payment|refund|dispute|withdrawal|wallet)\b",
+        r"(booking|bid|order|payment|transaction|refund|dispute|withdrawal|wallet)\b",
         re.IGNORECASE,
     ),
+    re.compile(r"\bmy\s+transactions?\s+history\b", re.IGNORECASE),
     re.compile(
         r"\b(where|when)\s+(is|are|was|were|will)\s+(my\s+)?"
         r"(refund|payment|withdrawal|booking|order)\b",
@@ -32,7 +33,7 @@ _CURRENT_STATE_PATTERNS: tuple[re.Pattern[str], ...] = (
     # Direct requests to inspect personal account data.
     re.compile(
         r"\b(show|list|check|get|view)\s+(me\s+)?my\s+"
-        r"(bookings?|trips?|bids?|payments?|orders?|wallet|escrow|"
+        r"(bookings?|trips?|bids?|payments?|transactions?|orders?|wallet|escrow|"
         r"disputes?|withdrawals?|devices?|enquir(?:y|ies))\b",
         re.IGNORECASE,
     ),
@@ -40,19 +41,19 @@ _CURRENT_STATE_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"\bhow\s+(?:can|do|should)\s+i\s+"
         r"(?:check|view|see|find|get|track|show|list)\b"
         r".{0,60}\bmy\s+"
-        r"(bookings?|trips?|bids?|payments?|orders?|wallet|escrow|"
+        r"(bookings?|trips?|bids?|payments?|transactions?|orders?|wallet|escrow|"
         r"disputes?|withdrawals?|devices?|enquir(?:y|ies))\b",
         re.IGNORECASE,
     ),
     re.compile(
         r"\b(?:check|view|show|get|see|find|tell\s+me)\b.{0,40}"
         r"\b(?:status|history)\b.{0,40}\b(?:my\s+)?"
-        r"(booking|bid|order|payment|refund|dispute|withdrawal)\b",
+        r"(booking|bid|order|payment|transaction|refund|dispute|withdrawal)\b",
         re.IGNORECASE,
     ),
     re.compile(
         r"\b(?:check|view|show|get|see|find|tell\s+me)\b.{0,40}"
-        r"\bmy\s+(booking|bid|order|payment|refund|dispute|withdrawal)\b"
+        r"\bmy\s+(booking|bid|order|payment|transaction|refund|dispute|withdrawal)\b"
         r".{0,20}\b(status|history|details?)\b",
         re.IGNORECASE,
     ),
@@ -74,7 +75,7 @@ _PERSONAL_STATE_PATTERNS: tuple[re.Pattern[str], ...] = (
     # Personal state
     re.compile(
         r"\bmy\s+(booking|bookings|bid|bids|payment|payments|order|orders"
-        r"|wallet|escrow|dispute|disputes|withdrawal"
+        r"|transaction|transactions|wallet|escrow|dispute|disputes|withdrawal"
         r"|device|devices|account\s+balance)\b",
         re.IGNORECASE,
     ),

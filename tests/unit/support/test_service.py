@@ -183,6 +183,55 @@ def test_booking_by_enquiry_retrieves_workflow_and_uses_llm(
     patch_gateway.generate_structured_sync.assert_called_once()
 
 
+def test_platform_overview_answer_cites_only_the_direct_overview_chunk(
+    retriever, patch_version_ok, patch_gateway
+):
+    overview = RetrievedChunk(
+        chunk_id="overview",
+        section_id="1.1",
+        section_path="Terms of Service > What Swabi is for",
+        text=(
+            "Swabi is an online travel marketplace that connects travelers "
+            "with independent travel-service vendors."
+        ),
+        score=0.8,
+    )
+    unrelated = RetrievedChunk(
+        chunk_id="privacy",
+        section_id="1.2",
+        section_path="Privacy Policy > What we collect",
+        text="Swabi collects identity, trip, payment, and usage data.",
+        score=0.7,
+    )
+    retriever.search.return_value = [overview, unrelated]
+    patch_gateway.generate_structured_sync.return_value = LLMAnswerOutput(
+        answer_type=AnswerType.ANSWERED,
+        answer=(
+            "Swabi is a travel marketplace connecting travelers with "
+            "independent travel-service vendors."
+        ),
+        citation_chunk_ids=["overview"],
+        confidence=0.95,
+    )
+
+    response = ask(
+        SupportAskRequest(
+            question="what is Swabi?",
+            audience=Audience.CUSTOMER,
+        ),
+        retriever=retriever,
+    )
+
+    assert response.answer_type == AnswerType.ANSWERED
+    assert [citation.chunk_id for citation in response.citations] == ["overview"]
+    assert retriever.search.call_args.args[0].startswith(
+        "Swabi platform overview and purpose"
+    )
+    assert "what is Swabi?" in patch_gateway.generate_structured_sync.call_args.kwargs[
+        "prompt"
+    ]
+
+
 def test_answered_but_bad_citation_downgrades(retriever, patch_version_ok, gateway):
     gateway.generate_structured_sync.return_value = LLMAnswerOutput(
         answer_type=AnswerType.ANSWERED,

@@ -21,13 +21,14 @@ from typing import Any
 import httpx
 
 from app.capabilities.support.live_data_classifier import LiveDataIntent
+from app.capabilities.support.schemas import MAX_SUPPORT_LIST_ITEMS
 from app.core.config import settings
 from app.core.logging import get_logger, request_id_var
 from app.swabi.crypto import SwabiDecryptionError, decrypt_payload
 
 log = get_logger(__name__)
 
-LIVE_FETCH_TIMEOUT = 10  # seconds
+LIVE_FETCH_TIMEOUT = 5  # seconds per attempt; keep synchronous support requests bounded
 LIVE_FETCH_MAX_ATTEMPTS = 2
 LIVE_FETCH_RETRY_DELAY_SECONDS = 0.25
 
@@ -395,8 +396,10 @@ def fetch_enquiry_bids(user_jwt: str, enquiry_id: str) -> dict[str, Any]:
 def fetch_package_list(
     user_jwt: str | None,
     destination: str | None = None,
+    limit: int | None = None,
 ) -> dict[str, Any]:
-    params: dict[str, Any] = {"page": 1, "limit": 10}
+    page_limit = 10 if limit is None else max(1, min(limit, MAX_SUPPORT_LIST_ITEMS))
+    params: dict[str, Any] = {"page": 1, "limit": page_limit}
     if destination:
         params["destination"] = destination
     response = _get("/packages", user_jwt=user_jwt, params=params)
@@ -456,10 +459,12 @@ def fetch_activity_list(
     user_jwt: str | None,
     query: str | None = None,
     category: str | None = None,
+    limit: int | None = None,
 ) -> dict[str, Any]:
     """Public activities. Endpoint changed from /activities to
     /activities/public/list — do not revert."""
-    params: dict[str, Any] = {"page": 1, "limit": 10}
+    page_limit = 10 if limit is None else max(1, min(limit, MAX_SUPPORT_LIST_ITEMS))
+    params: dict[str, Any] = {"page": 1, "limit": page_limit}
     if query:
         params["search"] = query
     if category:
@@ -715,13 +720,19 @@ def fetch_for_intent(
     # Public catalogue intents with optional filters.
     if intent == LiveDataIntent.PACKAGE_SEARCH:
         destination = entities.get("destination") or entities.get("query")
-        payload = handler(user_jwt, destination=destination or None)
+        limit = entities.get("limit")
+        if not isinstance(limit, int) or isinstance(limit, bool):
+            limit = None
+        payload = handler(user_jwt, destination=destination or None, limit=limit)
         return _ENDPOINT_LABEL[intent], payload
 
     if intent == LiveDataIntent.ACTIVITY_SEARCH:
         query = entities.get("query") or None
         category = entities.get("category") or None
-        payload = handler(user_jwt, query=query, category=category)
+        limit = entities.get("limit")
+        if not isinstance(limit, int) or isinstance(limit, bool):
+            limit = None
+        payload = handler(user_jwt, query=query, category=category, limit=limit)
         return _ENDPOINT_LABEL[intent], payload
 
     if intent == LiveDataIntent.POPULAR_DESTINATIONS:

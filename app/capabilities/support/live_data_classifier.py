@@ -234,6 +234,8 @@ _MY_PAYMENTS = [
     re.compile(r"\bmy\s+payments?\b", re.I),
     re.compile(r"\bhow\s+much\s+did\s+i\s+pay\b", re.I),
     re.compile(r"\bpayment\s+history\b", re.I),
+    re.compile(r"\bmy\s+transactions?\s+history\b", re.I),
+    re.compile(r"\bmy\s+transactions?\b", re.I),
     re.compile(
         r"\bmy\s+(pending|complete(?:d)?|cancel(?:l?ed)?|failed)\s+"
         r"payments?\b",
@@ -245,6 +247,10 @@ _MY_PAYMENTS = [
         re.I,
     ),
 ]
+_CUSTOMER_TRANSACTION_HISTORY = re.compile(
+    r"\bmy\s+transactions?\s+history\b|\bmy\s+transactions?\b",
+    re.I,
+)
 
 _MY_COINS = [
     re.compile(r"\bmy\s+(swabi\s+)?coins?\b", re.I),
@@ -282,6 +288,7 @@ _VENDOR_TRANSACTIONS = [
         r"\b(my\s+)?(vendor\s+)?wallet\s+(transactions?|ledger|history)\b",
         re.I,
     ),
+    re.compile(r"\bmy\s+transactions?\s+history\b|\bmy\s+transactions?\b", re.I),
     re.compile(r"\b(bid|topup|top-up)\s+(history|transactions?)\b", re.I),
 ]
 
@@ -396,7 +403,12 @@ def classify(question: str, audience: str) -> ClassifiedIntent:
         if _matches(_MY_PAYMENTS, q):
             status = _extract_status(q, _PAYMENT_STATUS_MAP)
             entities = {"status": status} if status else {}
-            return ClassifiedIntent(LiveDataIntent.MY_PAYMENTS, entities, reason="my payments")
+            reason = (
+                "customer transaction history"
+                if _CUSTOMER_TRANSACTION_HISTORY.search(q)
+                else "my payments"
+            )
+            return ClassifiedIntent(LiveDataIntent.MY_PAYMENTS, entities, reason=reason)
         if _matches(_MY_BOOKINGS, q):
             status = _extract_status(q, _BOOKING_STATUS_MAP)
             entities = {"status": status} if status else {}

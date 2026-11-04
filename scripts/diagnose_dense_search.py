@@ -15,9 +15,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
-from app.core.config import settings
-from app.rag.embeddings import EmbeddingModel
-from app.rag.qdrant_store import QdrantStore, _retrieval_filter
+from app.core.config import settings  # noqa: E402
+from app.rag.embeddings import EmbeddingModel  # noqa: E402
+from app.rag.qdrant_store import QdrantStore, _retrieval_filter  # noqa: E402
 
 QUERY = "How can I book a package on this platform?"
 AUDIENCE = "customer"

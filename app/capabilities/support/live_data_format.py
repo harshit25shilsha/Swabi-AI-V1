@@ -1,7 +1,7 @@
-"""Format allowlisted live-data fields into concise user-facing text.
+"""Serialize allowlisted live-data fields for grounded answer generation.
 
 Hard rules:
-  * At most 5 items per list. Never the full set.
+  * At most 20 items per list; a smaller user-requested limit takes priority.
   * Truncate strings to prevent prompt bloat.
   * Never include raw JSON with internal fields (bank accounts, PANs,
     phone numbers). Only user-facing fields the LLM needs to answer.
@@ -14,9 +14,29 @@ from datetime import datetime
 from typing import Any
 
 from app.capabilities.support.live_data_classifier import LiveDataIntent
+from app.capabilities.support.schemas import (
+    DEFAULT_SUPPORT_LIST_ITEMS,
+    MAX_SUPPORT_LIST_ITEMS,
+)
 
-_MAX_ITEMS = 5
+_MAX_ITEMS = MAX_SUPPORT_LIST_ITEMS
 _MAX_STR = 120
+
+_LIST_FIELDS = {
+    LiveDataIntent.MY_BOOKINGS: "bookings",
+    LiveDataIntent.MY_PAYMENTS: "payments",
+    LiveDataIntent.MY_COIN_HISTORY: "transactions",
+    LiveDataIntent.MY_ENQUIRIES: "enquiries",
+    LiveDataIntent.MY_ENQUIRY_BIDS: "bids",
+    LiveDataIntent.VENDOR_TRANSACTIONS: "transactions",
+    LiveDataIntent.VENDOR_WITHDRAWALS: "withdrawals",
+    LiveDataIntent.VENDOR_INQUIRIES: "inquiries",
+    LiveDataIntent.VENDOR_BOOKINGS: "bookings",
+    LiveDataIntent.VENDOR_BIDS: "bids",
+    LiveDataIntent.PACKAGE_SEARCH: "packages",
+    LiveDataIntent.ACTIVITY_SEARCH: "activities",
+    LiveDataIntent.POPULAR_DESTINATIONS: "destinations",
+}
 
 
 def _s(value: Any, max_len: int = _MAX_STR) -> str:
@@ -526,8 +546,20 @@ _FORMATTERS = {
 }
 
 
-def format_for_intent(intent: LiveDataIntent, payload: dict[str, Any]) -> str:
+def format_for_intent(
+    intent: LiveDataIntent,
+    payload: Any,
+    *,
+    limit: int | None = None,
+) -> str:
     fmt = _FORMATTERS.get(intent)
     if fmt is None:
         return "Live data available but not formatted."
+    if limit is None:
+        limit = DEFAULT_SUPPORT_LIST_ITEMS
+    limit = max(1, min(int(limit), MAX_SUPPORT_LIST_ITEMS))
+
+    field = _LIST_FIELDS.get(intent)
+    if field and isinstance(payload, dict) and isinstance(payload.get(field), list):
+        payload = {**payload, field: payload[field][:limit]}
     return fmt(payload)

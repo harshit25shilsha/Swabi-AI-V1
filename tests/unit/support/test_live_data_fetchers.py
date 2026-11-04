@@ -9,6 +9,12 @@ from app.capabilities.support import live_data
 from app.capabilities.support.live_data import LiveDataFetchError
 from app.capabilities.support.live_data_classifier import LiveDataIntent
 
+
+@pytest.fixture(autouse=True)
+def isolate_shared_http_client(monkeypatch):
+    monkeypatch.setattr(live_data, "_live_http_client", None)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -296,6 +302,11 @@ def test_fetch_retries_timeout_and_succeeds(monkeypatch):
     assert calls == 2
 
 
+def test_live_fetch_timeout_is_bounded_for_synchronous_support():
+    assert live_data.LIVE_FETCH_TIMEOUT == 5
+    assert live_data.LIVE_FETCH_MAX_ATTEMPTS == 2
+
+
 def test_fetch_raises_after_timeout_retry_exhausted(monkeypatch):
     calls = 0
 
@@ -453,6 +464,28 @@ def test_fetch_for_payment_history_omits_unspecified_status(monkeypatch):
     )
 
     assert record[0]["params"] == {}
+
+
+def test_fetch_for_package_search_passes_requested_limit_to_api(monkeypatch):
+    record: list = []
+    _mock_httpx(
+        monkeypatch,
+        body={
+            "success": True,
+            "data": {"packages": [{"packageCode": "PKG-1"}], "total": 13},
+        },
+        record=record,
+    )
+
+    label, payload = live_data.fetch_for_intent(
+        LiveDataIntent.PACKAGE_SEARCH,
+        user_jwt=None,
+        entities={"query": "Goa", "limit": 2},
+    )
+
+    assert label == "GET /api/packages"
+    assert payload["total"] == 13
+    assert record[0]["params"] == {"page": 1, "limit": 2, "destination": "Goa"}
 
 
 def test_fetch_latest_enquiry_bids_uses_newest_enquiry(monkeypatch):

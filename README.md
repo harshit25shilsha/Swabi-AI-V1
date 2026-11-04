@@ -331,6 +331,24 @@ Content-Type: application/json
 }
 ```
 
+For multi-turn follow-ups, the caller may include up to 10 recent turns:
+
+```json
+{
+  "question": "Only show the latest two",
+  "audience": "customer",
+  "conversation_history": [
+    {"role": "user", "content": "Show my payment history"},
+    {"role": "assistant", "content": "I found your payment history..."}
+  ]
+}
+```
+
+The integration must bind the audience and JWT to the authenticated session
+and enforce role scope server-side; a client-supplied audience is not an
+authorization grant. Conversation history helps resolve references and
+constraints but never grants access or changes role scope.
+
 The route requires a user bearer token. Private live-data calls forward that
 token to NestJS, where authorization remains authoritative. Public catalogue
 intents (packages, package details, activities, and popular destinations) do
@@ -342,10 +360,22 @@ Swabi database directly.
 - **Approved knowledge:** Stable policies and process guidance are retrieved
   from Qdrant, filtered by audience and knowledge area. Policy chunks must be
   approved, effective, and not expired.
-- **Live APIs:** Current package/catalogue and account facts are fetched from
-  NestJS. Successful results are rendered from allowlisted fields without an
-  LLM rewrite, so transient LLM structured-output failures cannot corrupt a
-  successful live answer.
+- **Hybrid intent and answers:** Deterministic guards enforce audience scope
+  and preserve exact-ID fast paths. The LLM resolves list, catalogue, and
+  contextual follow-up requests; authorized facts are fetched from NestJS and
+  combined with approved RAG evidence when needed. The answer LLM receives
+  only allowlisted live fields and generates the user-facing response.
+- **Conversation context and limits:** Clients may send up to 10 recent
+  `conversation_history` turns (`user` or `assistant`, at most 2,000
+  characters each). Explicit list limits are applied before answer generation;
+  over-limit generated lists fall back to the exact trimmed live results.
+  Broad payment-history requests summarize up to 20 available records and
+  offer a follow-up; other unspecified lists default to five records.
+  Live-only requests skip Qdrant and knowledge-version checks.
+- **Latency:** Obvious unfiltered catalogue-list requests use a deterministic
+  fast path; destination/context-dependent requests still use semantic
+  classification. Live API attempts use a 5-second timeout and at most one
+  retry.
 - **No unsupported claims:** The current package endpoint filters only by
   destination. It does not expose season, travel-date availability, budget,
   or group-size filters; the answer says these constraints could not be
@@ -355,7 +385,7 @@ Swabi database directly.
   Unsupported or out-of-scope questions receive a safe fallback with
   audience-specific app guidance.
 
-### Phase 2 implementation and acceptance status
+### Phase 2 implementation and current status
 
 Implemented: dense + BM25 retrieval fused with RRF; optional local
 cross-encoder reranking; YAML policy lifecycle metadata and Qdrant eligibility
@@ -363,18 +393,29 @@ filters; `CURRENT` versus Qdrant alias authority checks; live API routing;
 grounding/retrieval evaluation tools; and structured-output truncation
 handling.
 
+The RAG customer-support scope is integrated for the current release. The
+platform-purpose knowledge update was published and indexed as version
+`48fa84f6d107`; the service authority check matched `CURRENT` to the Qdrant
+alias, retrieval returned the new overview chunk, and the platform-overview
+question was smoke-tested successfully. The current implementation is covered
+by the full test suite (769 passed, 44 deselected at the latest recorded run).
+Treat these test results as a code baseline, not a substitute for deployment-
+specific provider and NestJS contract checks.
+
 The latest 15-case retrieval report measured hybrid Recall@5 **0.973**, MRR
 **0.950**, nDCG **0.937**, and mean latency **2.14 s**. In the same run,
 reranking scored lower (Recall@5 **0.940**, MRR **0.922**, nDCG **0.911**) and
 was slower (**3.64 s**); therefore serving reranking remains disabled.
 
-Phase 2 is **implemented but not yet signed off**. The latest grounding report
-predates the structured-output and citation changes: judge coverage was
-**46.7%** (8 judge errors), citation precision **70.0%**, and citation recall
-**71.6%**. Rerun grounding after the changes, review the per-case findings,
-complete the real-service/policy-update acceptance matrix, and run final
-release checks before declaring Phase 2 complete. The current evaluation
-reports are `retrieval-reranked-phase2.json` and
+The current support/RAG feature phase is complete for the agreed scope. The
+latest grounding report predates later structured-output, citation, and
+support-routing changes: judge coverage was **46.7%** (8 judge errors),
+citation precision **70.0%**, and citation recall **71.6%**. These figures are
+historical and must not be presented as validation of the latest implementation.
+For wider production rollout, rerun grounding and review per-case findings,
+validate NestJS endpoints/auth/decryption in the target environment, and run
+deployment/configuration/latency checks. The current evaluation reports are
+`retrieval-reranked-phase2.json` and
 `grounding-report-phase2.json`; detailed interpretation and commands are in
 [`docs/hybrid_retrieval.md`](docs/hybrid_retrieval.md).
 
@@ -712,19 +753,27 @@ traffic, the following must be closed:
 Enquiry Understanding is a read-only extraction and does not raise the
 same failure-policy questions.
 
-RAG release readiness additionally requires:
+The RAG customer-support feature phase is complete for the current agreed
+scope. The knowledge update for the Swabi overview was published, indexed,
+and smoke-tested against the active development index. This is distinct from
+production rollout acceptance; deployment-specific checks still include:
 
-- [x] Review the reranked-vs-hybrid ranking and latency deltas on the
-  authoritative knowledge index; do not enable reranking solely because the
-  model is available.
-- [ ] Rerun grounding after the latest completion-budget and citation changes;
-  review semantic judge coverage and per-case citation findings.
-- [ ] Complete real-service tests for live endpoint response shapes, auth,
-  decryption, empty results, and error handling.
-- [ ] Verify a policy update end to end, including stale alias rejection and
-  activation of the newly published knowledge version.
-- [ ] Run combined Phase 2 regression and release checks, including latency,
-  configuration/secrets, logging, and deployment behavior.
+- [ ] Rerun grounding against the latest answer-generation and citation code;
+  review semantic judge coverage and per-case findings. The checked-in report
+  predates those changes.
+- [ ] Verify real NestJS endpoint response shapes, JWT forwarding, decryption,
+  empty results, and error handling for customer, vendor, and public intents.
+- [ ] Exercise stale `CURRENT`/Qdrant-alias mismatch rejection and confirm
+  recovery after a policy update in the target deployment.
+- [ ] Run deployment-specific latency, configuration/secrets, logging, and
+  service-behavior checks.
+
+The last recorded full test run passed 769 tests with 44 deselected. It is a
+code regression baseline, not a substitute for the external-service checks
+above. For a knowledge release, run `python -m scripts.rag_ingest --release`,
+then `python -m scripts.rag_index --version <version>` with the version
+reported by ingestion. Confirm `data/rag_index/CURRENT` matches the Qdrant
+alias before serving RAG requests; the service fails closed on a mismatch.
 
 The current package API accepts only `page`, `limit`, and `destination`.
 Season, travel-date availability, budget, and traveler-count matching remain

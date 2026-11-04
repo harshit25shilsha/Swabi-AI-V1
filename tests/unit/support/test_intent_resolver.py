@@ -9,6 +9,7 @@ import pytest
 from app.capabilities.support.intent_llm import LLMIntentResult
 from app.capabilities.support.intent_resolver import IntentResolver
 from app.capabilities.support.live_data_classifier import LiveDataIntent
+from app.capabilities.support.schemas import ConversationTurn
 
 
 def _resolver(llm_result=None):
@@ -17,10 +18,20 @@ def _resolver(llm_result=None):
     return IntentResolver(llm_classifier=llm), llm
 
 
-def test_deterministic_hit_skips_llm():
+def test_list_intent_uses_llm_then_falls_back_to_deterministic():
     r, llm = _resolver()
     out = r.resolve("What are my bookings?", "customer")
     assert out.intent == LiveDataIntent.MY_BOOKINGS
+    assert out.source == "deterministic"
+    llm.classify.assert_called_once()
+
+
+def test_customer_transaction_history_routes_to_payment_history():
+    r, llm = _resolver()
+
+    out = r.resolve("Show my transaction history", "customer")
+
+    assert out.intent == LiveDataIntent.MY_PAYMENTS
     assert out.source == "deterministic"
     llm.classify.assert_not_called()
 
@@ -78,7 +89,7 @@ def test_policy_and_booking_status_question_uses_both_sources():
     assert out.intent == LiveDataIntent.MY_BOOKINGS
     assert out.use_rag is True
     assert out.source == "deterministic"
-    llm.classify.assert_not_called()
+    llm.classify.assert_called_once()
 
 
 def test_how_to_check_booking_status_does_not_add_rag():
@@ -88,7 +99,7 @@ def test_how_to_check_booking_status_does_not_add_rag():
 
     assert out.intent == LiveDataIntent.MY_BOOKINGS
     assert out.use_rag is False
-    llm.classify.assert_not_called()
+    llm.classify.assert_called_once()
 
 
 def test_public_catalogue_request_consults_llm():
@@ -105,8 +116,29 @@ def test_public_catalogue_request_consults_llm():
     llm.classify.assert_called_once()
 
 
-def test_direct_package_search_uses_public_intent_without_entity_extraction():
+def test_direct_unfiltered_package_search_uses_fast_path_and_extracts_count():
     r, llm = _resolver()
+
+    out = r.resolve(
+        "provide me only 2 packages available in this platform",
+        "customer",
+    )
+
+    assert out.intent == LiveDataIntent.PACKAGE_SEARCH
+    assert out.entities == {"query": ""}
+    assert out.requested_limit == 2
+    assert out.source == "deterministic"
+    llm.classify.assert_not_called()
+
+
+def test_filtered_package_request_still_uses_semantic_classification():
+    r, llm = _resolver(
+        llm_result=LLMIntentResult(
+            intent=LiveDataIntent.PACKAGE_SEARCH,
+            entities={"query": ""},
+            confidence=0.9,
+        )
+    )
 
     out = r.resolve(
         "provide me available packages in swabi platform for winter that i can book",
@@ -114,9 +146,18 @@ def test_direct_package_search_uses_public_intent_without_entity_extraction():
     )
 
     assert out.intent == LiveDataIntent.PACKAGE_SEARCH
-    assert out.entities == {}
-    assert out.source == "deterministic"
-    llm.classify.assert_not_called()
+    assert out.source == "llm"
+    llm.classify.assert_called_once()
+
+
+def test_package_search_with_unresolved_location_does_not_fetch_unfiltered_catalogue():
+    r, llm = _resolver()
+
+    out = r.resolve("Show me packages in Goa", "customer")
+
+    assert out.intent == LiveDataIntent.NONE
+    assert out.reason == "llm_unavailable"
+    llm.classify.assert_called_once()
 
 
 def test_seasonal_package_search_keeps_extracted_destination():
@@ -184,3 +225,94 @@ def test_llm_unavailable_returns_none():
     out = r.resolve("please surface the trips I recently confirmed", "customer")
     assert out.intent == LiveDataIntent.NONE
     assert out.source == "none"
+
+
+@pytest.mark.parametrize(
+    ("question", "intent", "limit"),
+    [
+        ("Show me my last two payment history", LiveDataIntent.MY_PAYMENTS, 2),
+        ("Could you list a couple of my bookings?", LiveDataIntent.MY_BOOKINGS, 2),
+    ],
+)
+def test_llm_result_preserves_requested_list_limit(question, intent, limit):
+    r, llm = _resolver(
+        llm_result=LLMIntentResult(
+            intent=intent,
+            requested_limit=limit,
+            confidence=0.95,
+        )
+    )
+
+    out = r.resolve(question, "customer")
+
+    assert out.intent == intent
+    assert out.requested_limit == limit
+    assert out.source == "llm"
+
+
+def test_explicit_count_fallback_is_applied_when_llm_omits_limit():
+    r, _ = _resolver(
+        llm_result=LLMIntentResult(
+            intent=LiveDataIntent.MY_PAYMENTS,
+            confidence=0.95,
+        )
+    )
+
+    out = r.resolve("Show me my last two payment history", "customer")
+
+    assert out.requested_limit == 2
+
+
+def test_common_count_phrase_is_preserved_when_llm_omits_limit():
+    r, _ = _resolver(
+        llm_result=LLMIntentResult(
+            intent=LiveDataIntent.MY_BOOKINGS,
+            confidence=0.95,
+        )
+    )
+
+    out = r.resolve("List a couple of my bookings", "customer")
+
+    assert out.requested_limit == 2
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Show packages under 2,000",
+        "Find packages for 2 travelers",
+    ],
+)
+def test_fallback_does_not_confuse_filters_with_result_limits(question):
+    r, _ = _resolver(
+        llm_result=LLMIntentResult(
+            intent=LiveDataIntent.PACKAGE_SEARCH,
+            confidence=0.95,
+        )
+    )
+
+    out = r.resolve(question, "customer")
+
+    assert out.requested_limit is None
+
+
+def test_short_followup_is_classified_with_recent_context():
+    history = [
+        ConversationTurn(role="user", content="Show me packages in Goa"),
+        ConversationTurn(role="assistant", content="I found several packages."),
+    ]
+    r, llm = _resolver(
+        llm_result=LLMIntentResult(
+            intent=LiveDataIntent.PACKAGE_SEARCH,
+            entities={"query": "Goa"},
+            requested_limit=2,
+            confidence=0.95,
+        )
+    )
+
+    out = r.resolve("Only two, please", "customer", conversation_history=history)
+
+    assert out.intent == LiveDataIntent.PACKAGE_SEARCH
+    assert out.entities == {"query": "Goa"}
+    assert out.requested_limit == 2
+    assert llm.classify.call_args.kwargs["conversation_history"] == history

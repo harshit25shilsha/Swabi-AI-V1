@@ -18,6 +18,7 @@ from app.capabilities.support.live_data_check import is_live_data_question
         "Current price for that package",
         "Is it available this weekend?",
         "How much did I pay for the Manali trip?",
+        "Show my transaction history",
     ],
 )
 def test_live_data_questions_flagged(q):

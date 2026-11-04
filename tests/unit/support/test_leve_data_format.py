@@ -55,6 +55,39 @@ def test_my_bookings_capped_at_5():
     assert "of 20" in text
 
 
+def test_requested_result_limit_is_applied_before_serialization():
+    payments = [
+        {
+            "createdAt": f"2026-10-{day:02d}T00:00:00Z",
+            "amount": day,
+            "status": "completed",
+        }
+        for day in range(1, 6)
+    ]
+
+    text = format_for_intent(
+        LiveDataIntent.MY_PAYMENTS,
+        {"payments": payments, "total": 20},
+        limit=2,
+    )
+
+    assert text.count("- ") == 2
+    assert "most recent 2 of 20" in text
+    assert "03 Oct 2026" not in text
+
+
+def test_requested_result_limit_is_bounded():
+    packages = [{"title": f"Package {i}"} for i in range(1, 24)]
+
+    text = format_for_intent(
+        LiveDataIntent.PACKAGE_SEARCH,
+        {"packages": packages, "total": 23},
+        limit=100,
+    )
+
+    assert text.count("- **") == 20
+
+
 def test_package_search_hides_negative_duration():
     text = format_for_intent(
         LiveDataIntent.PACKAGE_SEARCH,

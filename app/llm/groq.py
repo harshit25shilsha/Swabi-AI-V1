@@ -115,6 +115,38 @@ def _estimate_request_tokens(payload: dict[str, object]) -> int:
     return prompt_estimate + completion_estimate
 
 
+def _log_groq_attempt_timing(
+    *,
+    model: str,
+    attempt: int,
+    max_attempts: int,
+    attempt_started: float,
+    semaphore_wait_ms: float,
+    tpm_wait_ms: float,
+    http_request_ms: float,
+    status_code: int | None = None,
+    error_type: str | None = None,
+) -> None:
+    log.info(
+        "groq_attempt_timing",
+        extra={
+            "event": "groq_attempt_timing",
+            "model": model,
+            "attempt": attempt,
+            "max_attempts": max_attempts,
+            "status_code": status_code,
+            "error_type": error_type,
+            "semaphore_wait_ms": round(semaphore_wait_ms, 2),
+            "tpm_wait_ms": round(tpm_wait_ms, 2),
+            "http_request_ms": round(http_request_ms, 2),
+            "attempt_total_ms": round(
+                (time.perf_counter() - attempt_started) * 1000,
+                2,
+            ),
+        },
+    )
+
+
 async def _acquire_request_slot() -> None:
     while not _request_semaphore.acquire(blocking=False):
         await asyncio.sleep(0.05)
@@ -376,30 +408,6 @@ class GroqProvider:
             reservation_id: str | None = None
             acquired = False
 
-            def log_attempt(
-                *,
-                status_code: int | None = None,
-                error_type: str | None = None,
-            ) -> None:
-                log.info(
-                    "groq_attempt_timing",
-                    extra={
-                        "event": "groq_attempt_timing",
-                        "model": self.model,
-                        "attempt": attempt,
-                        "max_attempts": self.max_retries + 1,
-                        "status_code": status_code,
-                        "error_type": error_type,
-                        "semaphore_wait_ms": round(semaphore_wait_ms, 2),
-                        "tpm_wait_ms": round(tpm_wait_ms, 2),
-                        "http_request_ms": round(http_request_ms, 2),
-                        "attempt_total_ms": round(
-                            (time.perf_counter() - attempt_started) * 1000,
-                            2,
-                        ),
-                    },
-                )
-
             try:
                 client = _get_sync_client()
 
@@ -435,7 +443,16 @@ class GroqProvider:
                 ) * 1000
 
             except httpx.TimeoutException as exc:
-                log_attempt(error_type="timeout")
+                _log_groq_attempt_timing(
+                    model=self.model,
+                    attempt=attempt,
+                    max_attempts=self.max_retries + 1,
+                    attempt_started=attempt_started,
+                    semaphore_wait_ms=semaphore_wait_ms,
+                    tpm_wait_ms=tpm_wait_ms,
+                    http_request_ms=http_request_ms,
+                    error_type="timeout",
+                )
 
                 last_exc = AITimeoutError(
                     f"Groq timeout after {self.timeout}s"
@@ -455,7 +472,16 @@ class GroqProvider:
                 continue
 
             except httpx.HTTPError as exc:
-                log_attempt(error_type="http_error")
+                _log_groq_attempt_timing(
+                    model=self.model,
+                    attempt=attempt,
+                    max_attempts=self.max_retries + 1,
+                    attempt_started=attempt_started,
+                    semaphore_wait_ms=semaphore_wait_ms,
+                    tpm_wait_ms=tpm_wait_ms,
+                    http_request_ms=http_request_ms,
+                    error_type="http_error",
+                )
 
                 last_exc = AIProviderError(
                     f"Groq network error: {exc}"
@@ -475,14 +501,32 @@ class GroqProvider:
                 continue
 
             except Exception as exc:
-                log_attempt(error_type=type(exc).__name__)
+                _log_groq_attempt_timing(
+                    model=self.model,
+                    attempt=attempt,
+                    max_attempts=self.max_retries + 1,
+                    attempt_started=attempt_started,
+                    semaphore_wait_ms=semaphore_wait_ms,
+                    tpm_wait_ms=tpm_wait_ms,
+                    http_request_ms=http_request_ms,
+                    error_type=type(exc).__name__,
+                )
                 raise
 
             finally:
                 if acquired:
                     _request_semaphore.release()
 
-            log_attempt(status_code=resp.status_code)
+            _log_groq_attempt_timing(
+                model=self.model,
+                attempt=attempt,
+                max_attempts=self.max_retries + 1,
+                attempt_started=attempt_started,
+                semaphore_wait_ms=semaphore_wait_ms,
+                tpm_wait_ms=tpm_wait_ms,
+                http_request_ms=http_request_ms,
+                status_code=resp.status_code,
+            )
 
             groq_tpm_limiter.update_from_response(
                 resp.headers,

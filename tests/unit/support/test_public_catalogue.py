@@ -104,6 +104,16 @@ def test_winter_package_search_returns_live_catalogue_and_discloses_limit(
     retriever, patch_version_ok, patch_gateway
 ):
     question = "provide me available packages in swabi platform for winter that i can book"
+    patch_gateway.generate_structured_sync.return_value = LLMAnswerOutput(
+        answer_type=AnswerType.ANSWERED,
+        answer=(
+            "Rishikesh Tours (PKG-922) is available in the catalogue. The catalogue "
+            "cannot filter by season, so please confirm winter availability "
+            "with the provider before booking."
+        ),
+        citation_chunk_ids=[],
+        confidence=0.9,
+    )
     with (
         patch("app.capabilities.support.service._get_resolver") as rmock,
         patch(
@@ -145,13 +155,12 @@ def test_winter_package_search_returns_live_catalogue_and_discloses_limit(
     assert response.live_data_sources == ["GET /api/packages"]
     assert response.answer_type == AnswerType.ANSWERED
     assert "PKG-922" in response.answer
-    assert "I found one package" in response.answer
-    assert "only lets me filter packages by destination" in response.answer
-    assert "confirm the requested season" in response.answer
+    assert "cannot filter by season" in response.answer
     assert "provider before booking" in response.answer
-    assert " | " not in response.answer
-    assert response.provider == ""
-    patch_gateway.generate_structured_sync.assert_not_called()
+    assert response.provider == "groq"
+    prompt = patch_gateway.generate_structured_sync.call_args.kwargs["prompt"]
+    assert "only lets me filter packages by destination" in prompt
+    patch_gateway.generate_structured_sync.assert_called_once()
     retriever.search.assert_not_called()
 
 
@@ -175,6 +184,12 @@ def test_package_detail_no_jwt(retriever, patch_version_ok, patch_gateway):
             "isEscrowSafe": True,
         }
     }
+    patch_gateway.generate_structured_sync.return_value = LLMAnswerOutput(
+        answer_type=AnswerType.ANSWERED,
+        answer="Rishikesh Tours (PKG-922) is a 2-day package in India.",
+        citation_chunk_ids=[],
+        confidence=0.9,
+    )
     with (
         patch("app.capabilities.support.service._get_resolver") as rmock,
         patch(
@@ -202,7 +217,7 @@ def test_package_detail_no_jwt(retriever, patch_version_ok, patch_gateway):
     assert r.answer_type == AnswerType.ANSWERED
     assert "Rishikesh Tours" in r.answer
     assert "PKG-922" in r.answer
-    patch_gateway.generate_structured_sync.assert_not_called()
+    patch_gateway.generate_structured_sync.assert_called_once()
 
 
 def test_activity_search_no_jwt(retriever, patch_version_ok, patch_gateway):
@@ -257,6 +272,12 @@ def test_popular_destinations_no_jwt(retriever, patch_version_ok, patch_gateway)
             }
         ]
     }
+    patch_gateway.generate_structured_sync.return_value = LLMAnswerOutput(
+        answer_type=AnswerType.ANSWERED,
+        answer="Srinagar is trending, with 21 enquiries and an average budget of INR 16,380.95.",
+        citation_chunk_ids=[],
+        confidence=0.9,
+    )
     with (
         patch("app.capabilities.support.service._get_resolver") as rmock,
         patch(
@@ -284,7 +305,7 @@ def test_popular_destinations_no_jwt(retriever, patch_version_ok, patch_gateway)
     assert r.answer_type == AnswerType.ANSWERED
     assert "Srinagar" in r.answer
     assert "21" in r.answer
-    patch_gateway.generate_structured_sync.assert_not_called()
+    patch_gateway.generate_structured_sync.assert_called_once()
 
 
 def test_package_detail_formatter_produces_expected_shape():
