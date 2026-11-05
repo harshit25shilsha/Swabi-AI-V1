@@ -303,8 +303,31 @@ def test_fetch_retries_timeout_and_succeeds(monkeypatch):
 
 
 def test_live_fetch_timeout_is_bounded_for_synchronous_support():
-    assert live_data.LIVE_FETCH_TIMEOUT == 5
-    assert live_data.LIVE_FETCH_MAX_ATTEMPTS == 2
+    assert live_data.LIVE_FETCH_TIMEOUT == 8
+    assert live_data.LIVE_FETCH_MAX_ATTEMPTS == 3
+
+
+def test_fetch_retries_retryable_server_response(monkeypatch):
+    responses = [
+        _FakeResponse(503, {"error": "temporarily unavailable"}),
+        _FakeResponse(200, {"success": True, "data": {"bookings": [], "total": 0}}),
+    ]
+    delays: list[float] = []
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def get(self, url, headers=None, params=None):
+            return responses.pop(0)
+
+    monkeypatch.setattr("app.capabilities.support.live_data.httpx.Client", FakeClient)
+    monkeypatch.setattr("app.capabilities.support.live_data.time.sleep", delays.append)
+
+    result = live_data.fetch_my_bookings(_jwt())
+
+    assert result["total"] == 0
+    assert delays == [live_data.LIVE_FETCH_RETRY_DELAY_SECONDS]
 
 
 def test_fetch_raises_after_timeout_retry_exhausted(monkeypatch):

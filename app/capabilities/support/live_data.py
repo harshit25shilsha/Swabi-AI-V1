@@ -28,9 +28,15 @@ from app.swabi.crypto import SwabiDecryptionError, decrypt_payload
 
 log = get_logger(__name__)
 
-LIVE_FETCH_TIMEOUT = 5  # seconds per attempt; keep synchronous support requests bounded
-LIVE_FETCH_MAX_ATTEMPTS = 2
-LIVE_FETCH_RETRY_DELAY_SECONDS = 0.25
+# The Swabi API can take a little while to recover after a cold start or a
+# transient network stall.  Retrying for only 10.25 seconds (two five-second
+# attempts) made an otherwise healthy request appear to fail to the user.
+# Keep the synchronous request bounded, while allowing one recovery attempt:
+# 8 + 1 + 8 + 2 + 8 = 27 seconds at most before response processing.
+LIVE_FETCH_TIMEOUT = 8  # seconds per attempt
+LIVE_FETCH_MAX_ATTEMPTS = 3
+LIVE_FETCH_RETRY_DELAY_SECONDS = 1.0
+_RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 
 _UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
@@ -141,6 +147,11 @@ def _headers(user_jwt: str | None) -> dict[str, str]:
     return headers
 
 
+def _retry_delay(attempt: int) -> float:
+    """Return bounded exponential backoff after a failed attempt."""
+    return LIVE_FETCH_RETRY_DELAY_SECONDS * (2 ** (attempt - 1))
+
+
 def _get(
     path: str,
     *,
@@ -195,6 +206,25 @@ def _get(
                     "shared_client": True,
                 },
             )
+            if (
+                resp.status_code in _RETRYABLE_STATUS_CODES
+                and attempt < LIVE_FETCH_MAX_ATTEMPTS
+            ):
+                delay = _retry_delay(attempt)
+                log.warning(
+                    "live_data_http_retryable_status",
+                    extra={
+                        "event": "live_data_http_retry",
+                        "path": path,
+                        "attempt": attempt,
+                        "status_code": resp.status_code,
+                        "retry_delay_seconds": delay,
+                        "shared_client": True,
+                    },
+                )
+                time.sleep(delay)
+                continue
+
             break
 
         except httpx.TimeoutException as exc:
@@ -217,7 +247,18 @@ def _get(
             if attempt == LIVE_FETCH_MAX_ATTEMPTS:
                 raise LiveDataFetchError(f"{path}: timeout") from exc
 
-            time.sleep(LIVE_FETCH_RETRY_DELAY_SECONDS)
+            delay = _retry_delay(attempt)
+            log.info(
+                "live_data_http_retry_scheduled",
+                extra={
+                    "event": "live_data_http_retry",
+                    "path": path,
+                    "attempt": attempt,
+                    "retry_delay_seconds": delay,
+                    "shared_client": True,
+                },
+            )
+            time.sleep(delay)
 
         except httpx.HTTPError as exc:
             log.warning(

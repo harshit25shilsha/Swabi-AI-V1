@@ -221,6 +221,7 @@ def test_fetch_failure_returns_needs_live(retriever, patch_version_ok):
         )
     assert r.answer_type == AnswerType.NEEDS_LIVE_DATA
     assert "couldn't retrieve" in r.answer.lower()
+    assert "swabi support" in r.answer.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -619,13 +620,15 @@ def test_requested_limit_is_applied_to_packages_and_generation_context(
             retriever=retriever,
         )
 
-    assert response.answer == "Here are two Goa packages:\n- Tour 1\n- Tour 2"
-    assert fetch.call_args.kwargs["entities"] == {"query": "Goa", "limit": 2}
+    assert "Here are 2 to get you started" in response.answer
+    assert "Tour 1" in response.answer and "Tour 2" in response.answer
+    assert "Tour 3" not in response.answer
+    assert fetch.call_args.kwargs["entities"] == {"query": "Goa", "limit": 20}
     prompt = patch_gateway.generate_structured_sync.call_args.kwargs["prompt"]
     assert "REQUESTED RESULT LIMIT: 2" in prompt
     assert "Tour 1" in prompt and "Tour 2" in prompt
     assert "Tour 3" not in prompt
-    assert "13 packages" in prompt
+    assert "3 packages" in prompt
     assert "Here are 2 to get you started" in prompt
     assert "Before a result list, add one short, natural lead-in" in (
         patch_gateway.generate_structured_sync.call_args.kwargs["system"]

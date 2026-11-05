@@ -100,6 +100,196 @@ def test_package_search_no_jwt(retriever, patch_version_ok, patch_gateway):
     assert r.retrieval_mode_used == "not_applicable"
 
 
+def test_location_package_search_filters_api_results_and_uses_verified_output(
+    retriever, patch_version_ok, patch_gateway
+):
+    patch_gateway.generate_structured_sync.return_value = LLMAnswerOutput(
+        answer_type=AnswerType.ANSWERED,
+        answer=(
+            "Here are two packages:\n"
+            "- Rishikesh Tours (PKG-922)\n"
+            "- Uttar Pradesh Tour (PKG-921)"
+        ),
+        citation_chunk_ids=[],
+        confidence=0.99,
+    )
+    with (
+        patch("app.capabilities.support.service._get_resolver") as rmock,
+        patch(
+            "app.capabilities.support.service.fetch_for_intent",
+            return_value=(
+                "GET /api/packages",
+                {
+                    "packages": [
+                        {
+                            "packageCode": "PKG-922",
+                            "title": "Rishikesh Tours",
+                            "destination": "India",
+                            "duration": "2 Days",
+                            "numberOfDays": 2,
+                            "price": 2000,
+                            "currency": "INR",
+                        },
+                        {
+                            "packageCode": "PKG-921",
+                            "title": "Uttar Pradesh Tour",
+                            "destination": "India",
+                            "duration": "2 Days",
+                            "numberOfDays": 2,
+                            "price": 4000,
+                            "currency": "INR",
+                        },
+                    ],
+                    "total": 13,
+                },
+            ),
+        ) as fetch,
+    ):
+        rmock.return_value.resolve.return_value = MagicMock(
+            intent=LiveDataIntent.PACKAGE_SEARCH,
+            entities={"query": "Uttarakhand"},
+            requested_limit=2,
+            source="llm",
+            reason="",
+            use_rag=True,
+        )
+        response = ask(
+            SupportAskRequest(
+                question="provide me 2 packages uttarakhand based",
+                audience=Audience.CUSTOMER,
+            ),
+            retriever=retriever,
+            user_jwt=None,
+        )
+
+    assert response.answer_type == AnswerType.ANSWERED
+    assert "Rishikesh Tours" in response.answer
+    assert "PKG-922" in response.answer
+    assert "Uttar Pradesh Tour" not in response.answer
+    assert "PKG-921" not in response.answer
+    assert fetch.call_args.kwargs["entities"] == {
+        "query": "Uttarakhand",
+        "limit": 20,
+    }
+
+
+def test_location_search_retries_unfiltered_catalogue_when_backend_filter_returns_none(
+    retriever, patch_version_ok, patch_gateway
+):
+    with (
+        patch("app.capabilities.support.service._get_resolver") as rmock,
+        patch(
+            "app.capabilities.support.service.fetch_for_intent",
+            side_effect=[
+                ("GET /api/packages", {"packages": [], "total": 0}),
+                (
+                    "GET /api/packages",
+                    {
+                        "packages": [
+                            {
+                                "packageCode": "PKG-922",
+                                "title": "Rishikesh Tours",
+                                "destination": "India",
+                                "numberOfDays": 2,
+                                "price": 2000,
+                                "currency": "INR",
+                            },
+                            {
+                                "packageCode": "PKG-921",
+                                "title": "Uttar Pradesh Tour",
+                                "destination": "India",
+                                "numberOfDays": 2,
+                                "price": 4000,
+                                "currency": "INR",
+                            },
+                        ],
+                        "total": 13,
+                    },
+                ),
+            ],
+        ) as fetch,
+    ):
+        rmock.return_value.resolve.return_value = MagicMock(
+            intent=LiveDataIntent.PACKAGE_SEARCH,
+            entities={"query": "Uttarakhand"},
+            requested_limit=2,
+            source="llm",
+            reason="",
+        )
+        response = ask(
+            SupportAskRequest(
+                question="provide me 2 packages uttarakhand based",
+                audience=Audience.CUSTOMER,
+            ),
+            retriever=retriever,
+            user_jwt=None,
+        )
+
+    assert "Rishikesh Tours" in response.answer
+    assert "PKG-922" in response.answer
+    assert "Uttar Pradesh Tour" not in response.answer
+    assert "PKG-921" not in response.answer
+    assert fetch.call_count == 2
+    assert fetch.call_args_list[0].kwargs["entities"] == {
+        "query": "Uttarakhand",
+        "limit": 20,
+    }
+    assert fetch.call_args_list[1].kwargs["entities"] == {"limit": 20}
+
+
+def test_uttar_pradesh_search_does_not_return_rishikesh_package(
+    retriever, patch_version_ok, patch_gateway
+):
+    with (
+        patch("app.capabilities.support.service._get_resolver") as rmock,
+        patch(
+            "app.capabilities.support.service.fetch_for_intent",
+            return_value=(
+                "GET /api/packages",
+                {
+                    "packages": [
+                        {
+                            "packageCode": "PKG-922",
+                            "title": "Rishikesh Tours",
+                            "destination": "India",
+                        },
+                        {
+                            "packageCode": "PKG-921",
+                            "title": "Uttar Pradesh Tour",
+                            "destination": "India",
+                        },
+                    ],
+                    "total": 13,
+                },
+            ),
+        ) as fetch,
+    ):
+        rmock.return_value.resolve.return_value = MagicMock(
+            intent=LiveDataIntent.PACKAGE_SEARCH,
+            entities={"query": "uttar pradesh"},
+            requested_limit=2,
+            source="deterministic",
+            reason="location_package_search",
+        )
+        response = ask(
+            SupportAskRequest(
+                question="provide me 2 uttar pradesh based packages",
+                audience=Audience.CUSTOMER,
+            ),
+            retriever=retriever,
+            user_jwt=None,
+        )
+
+    assert "Uttar Pradesh Tour" in response.answer
+    assert "PKG-921" in response.answer
+    assert "Rishikesh Tours" not in response.answer
+    assert "PKG-922" not in response.answer
+    assert fetch.call_args.kwargs["entities"] == {
+        "query": "uttar pradesh",
+        "limit": 20,
+    }
+
+
 def test_winter_package_search_returns_live_catalogue_and_discloses_limit(
     retriever, patch_version_ok, patch_gateway
 ):
@@ -155,7 +345,7 @@ def test_winter_package_search_returns_live_catalogue_and_discloses_limit(
     assert response.live_data_sources == ["GET /api/packages"]
     assert response.answer_type == AnswerType.ANSWERED
     assert "PKG-922" in response.answer
-    assert "cannot filter by season" in response.answer
+    assert "only lets me filter packages by destination" in response.answer
     assert "provider before booking" in response.answer
     assert response.provider == "groq"
     prompt = patch_gateway.generate_structured_sync.call_args.kwargs["prompt"]

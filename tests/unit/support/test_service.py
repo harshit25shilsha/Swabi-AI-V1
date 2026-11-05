@@ -134,11 +134,12 @@ def test_vendor_insufficient_answer_suggests_relevant_app_sections(
         )
 
     assert response.answer_type == AnswerType.INSUFFICIENT_CONTEXT
+    assert response.answer.startswith("Sorry,")
     assert "New Enquiries" in response.answer
-    assert "bids" in response.answer
+    assert "bids" in response.answer.lower()
     assert "Wallet" in response.answer
     assert "Withdrawals" in response.answer
-    assert "Swabi support" in response.answer
+    assert "Swabi Support" in response.answer
     patch_gateway.generate_structured_sync.assert_not_called()
 
 
@@ -338,6 +339,9 @@ def test_llm_out_of_scope_returned(retriever, patch_version_ok, gateway):
             retriever=retriever,
         )
     assert r.answer_type == AnswerType.OUT_OF_SCOPE
+    assert r.answer.startswith("Sorry,")
+    assert "Swabi Support" in r.answer
+    assert "relevant service" in r.answer
 
 
 # ---------------------------------------------------------------------------

@@ -224,10 +224,13 @@ async def test_generate_structured_invalid_raises():
 
 def test_sync_structured_output_retries_truncation_with_more_tokens():
     provider = MagicMock()
-    truncated = _response('{"name": "Swabi"')
+    truncated = _response("")
     truncated.metadata["finish_reason"] = "length"
+    truncated_again = _response("")
+    truncated_again.metadata["finish_reason"] = "length"
     provider.generate_sync.side_effect = [
         truncated,
+        truncated_again,
         _response('{"name": "Swabi", "age": 1}'),
     ]
     gw = LLMGateway(provider=provider)
@@ -239,9 +242,33 @@ def test_sync_structured_output_retries_truncation_with_more_tokens():
     )
 
     assert output.name == "Swabi"
-    assert provider.generate_sync.call_count == 2
+    assert provider.generate_sync.call_count == 3
     assert provider.generate_sync.call_args_list[0].kwargs["max_tokens"] == 512
-    assert provider.generate_sync.call_args_list[1].kwargs["max_tokens"] == 1024
+    assert [
+        call.kwargs["max_tokens"] for call in provider.generate_sync.call_args_list
+    ] == [512, 1024, 2048]
+
+
+@pytest.mark.asyncio
+async def test_async_structured_output_retries_empty_truncated_response():
+    provider = AsyncMock()
+    truncated = _response("")
+    truncated.metadata["finish_reason"] = "length"
+    truncated_again = _response("")
+    truncated_again.metadata["finish_reason"] = "length"
+    provider.generate.side_effect = [
+        truncated,
+        truncated_again,
+        _response('{"name": "Swabi", "age": 1}'),
+    ]
+    gw = LLMGateway(provider=provider)
+
+    output = await gw.generate_structured("prompt", _Out, max_tokens=512)
+
+    assert output.name == "Swabi"
+    assert [
+        call.kwargs["max_tokens"] for call in provider.generate.call_args_list
+    ] == [512, 1024, 2048]
 
 
 def test_sync_structured_output_keeps_budget_for_non_truncation_error():

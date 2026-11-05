@@ -18,6 +18,7 @@ log = get_logger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 _MAX_STRUCTURED_COMPLETION_TOKENS = 4096
+_MAX_STRUCTURED_ATTEMPTS = 5
 
 
 def _increase_completion_budget(kwargs: dict[str, object]) -> dict[str, object]:
@@ -81,7 +82,8 @@ class LLMGateway:
     ) -> T:
         """Ask the LLM for JSON and validate it against a Pydantic model.
 
-        Retries once if the JSON does not validate.
+        Retries invalid JSON once, and increases the completion budget when
+        the provider reports that the output was truncated.
         """
         schema = json.dumps(response_model.model_json_schema(), indent=2)
         structured_prompt = (
@@ -93,7 +95,7 @@ class LLMGateway:
 
         last_error: Exception | None = None
         request_kwargs = dict(kwargs)
-        for attempt in range(2):
+        for attempt in range(_MAX_STRUCTURED_ATTEMPTS):
             response = await self.generate(
                 structured_prompt,
                 json_mode=True,
@@ -118,6 +120,9 @@ class LLMGateway:
                             request_kwargs.get("max_tokens"),
                         ),
                     )
+                    continue
+                if attempt > 0:
+                    break
                 log.warning(
                     "Structured output validation failed (attempt %d): %s",
                     attempt + 1,
@@ -133,8 +138,7 @@ class LLMGateway:
     ) -> T:
         """Synchronous mirror of ``generate_structured``.
 
-        Same prompt augmentation, same single retry on validation
-        failure, same exception type. Uses ``generate_sync`` under the
+        Same prompt augmentation and retry policy. Uses ``generate_sync`` under the
         hood so a sync call chain (Chat Safety, Enquiry) can request
         validated JSON without converting to async.
         """
@@ -148,7 +152,7 @@ class LLMGateway:
 
         last_error: Exception | None = None
         request_kwargs = dict(kwargs)
-        for attempt in range(2):
+        for attempt in range(_MAX_STRUCTURED_ATTEMPTS):
             response = self.generate_sync(
                 structured_prompt,
                 json_mode=True,
@@ -173,6 +177,9 @@ class LLMGateway:
                             request_kwargs.get("max_tokens"),
                         ),
                     )
+                    continue
+                if attempt > 0:
+                    break
                 log.warning(
                     "Structured output validation failed (attempt %d): %s",
                     attempt + 1,

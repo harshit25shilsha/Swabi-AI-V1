@@ -131,6 +131,30 @@ def test_direct_unfiltered_package_search_uses_fast_path_and_extracts_count():
     llm.classify.assert_not_called()
 
 
+def test_location_based_package_search_keeps_destination_and_result_limit():
+    r, llm = _resolver()
+
+    out = r.resolve("provide me 2 packages uttarakhand based", "customer")
+
+    assert out.intent == LiveDataIntent.PACKAGE_SEARCH
+    assert out.entities == {"query": "uttarakhand"}
+    assert out.requested_limit == 2
+    assert out.source == "deterministic"
+    llm.classify.assert_not_called()
+
+
+def test_destination_before_based_package_search_keeps_full_destination():
+    r, llm = _resolver()
+
+    out = r.resolve("provide me 2 uttar pradesh based packages", "customer")
+
+    assert out.intent == LiveDataIntent.PACKAGE_SEARCH
+    assert out.entities == {"query": "uttar pradesh"}
+    assert out.requested_limit == 2
+    assert out.source == "deterministic"
+    llm.classify.assert_not_called()
+
+
 def test_filtered_package_request_still_uses_semantic_classification():
     r, llm = _resolver(
         llm_result=LLMIntentResult(
@@ -150,13 +174,14 @@ def test_filtered_package_request_still_uses_semantic_classification():
     llm.classify.assert_called_once()
 
 
-def test_package_search_with_unresolved_location_does_not_fetch_unfiltered_catalogue():
+def test_package_search_fallback_preserves_location_instead_of_fetching_unfiltered_catalogue():
     r, llm = _resolver()
 
     out = r.resolve("Show me packages in Goa", "customer")
 
-    assert out.intent == LiveDataIntent.NONE
-    assert out.reason == "llm_unavailable"
+    assert out.intent == LiveDataIntent.PACKAGE_SEARCH
+    assert out.entities == {"query": "Goa"}
+    assert out.reason == "catalogue_search_fallback"
     llm.classify.assert_called_once()
 
 

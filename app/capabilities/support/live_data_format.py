@@ -443,6 +443,65 @@ def _fmt_package_search(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _package_matches_location(package: dict[str, Any], query: str) -> bool:
+    normalized_query = re.sub(r"[^a-z0-9]+", " ", query.casefold()).strip()
+    if not normalized_query:
+        return True
+
+    location_aliases = {
+        "uttarakhand": {
+            "uttarakhand",
+            "uttaranchal",
+            "uttrakhand",
+            "rishikesh",
+            "haridwar",
+            "dehradun",
+            "mussoorie",
+            "nainital",
+            "auli",
+            "kedarnath",
+            "badrinath",
+            "jim corbett",
+            "corbett",
+            "almora",
+            "uttarkashi",
+            "chamoli",
+            "tehri",
+            "pithoragarh",
+        }
+    }
+    accepted_locations = location_aliases.get(normalized_query, {normalized_query})
+    searchable_values = (
+        package.get(field)
+        for field in ("title", "destination", "location", "city", "state", "region", "name")
+    )
+    for value in searchable_values:
+        if not isinstance(value, str):
+            continue
+        normalized_value = re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+        if any(
+            re.search(rf"(?<!\w){re.escape(location)}(?!\w)", normalized_value)
+            for location in accepted_locations
+        ):
+            return True
+    return False
+
+
+def filter_package_payload_by_location(
+    payload: dict[str, Any],
+    query: str,
+) -> dict[str, Any]:
+    packages = payload.get("packages")
+    if not isinstance(packages, list):
+        return {**payload, "packages": [], "total": 0}
+    matching = [
+        package
+        for package in packages
+        if isinstance(package, dict) and _package_matches_location(package, query)
+    ]
+    return {**payload, "packages": matching, "total": len(matching)}
+
+
 def _fmt_package_detail(payload: dict[str, Any]) -> str:
     p = payload.get("package") or {}
     if not p:
@@ -551,10 +610,17 @@ def format_for_intent(
     payload: Any,
     *,
     limit: int | None = None,
+    search_query: str | None = None,
 ) -> str:
     fmt = _FORMATTERS.get(intent)
     if fmt is None:
         return "Live data available but not formatted."
+    if (
+        intent == LiveDataIntent.PACKAGE_SEARCH
+        and search_query
+        and isinstance(payload, dict)
+    ):
+        payload = filter_package_payload_by_location(payload, search_query)
     if limit is None:
         limit = DEFAULT_SUPPORT_LIST_ITEMS
     limit = max(1, min(int(limit), MAX_SUPPORT_LIST_ITEMS))

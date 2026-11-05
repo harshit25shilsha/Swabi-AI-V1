@@ -58,7 +58,23 @@ _PACKAGE_FILTER_HINT = re.compile(
     re.IGNORECASE,
 )
 _PACKAGE_LOCATION_HINT = re.compile(
-    r"\b(?:in|to|near|around|for)\s+([a-z][a-z -]{1,35})",
+    r"\b(?:in|to|near|around)\s+([a-z][a-z -]{1,35})",
+    re.IGNORECASE,
+)
+_PACKAGE_BASED_LOCATION = re.compile(
+    r"\b(?:packages?|tours?)\s+([a-z][a-z -]{1,35}?)\s+based\b",
+    re.IGNORECASE,
+)
+_LOCATION_BASED_PACKAGE_SEARCH = re.compile(
+    r"\b(?:provide|show|list|find|search|browse|get|recommend|need|want)\s+"
+    r"(?:me\s+)?(?:only\s+)?(?:\d+\s+)?"
+    r"(?P<location>[a-z][a-z -]{1,35}?)\s+based\s+(?:packages?|tours?)\b",
+    re.IGNORECASE,
+)
+_PACKAGE_LOCATION_END = re.compile(
+    r"\b(?:based|during|under|below|between|winter|summer|spring|autumn|fall|"
+    r"january|february|march|april|may|june|july|august|september|october|"
+    r"november|december|budget|price|family|children|travelers?|travellers?)\b",
     re.IGNORECASE,
 )
 _NON_LOCATION_TERMS = {"the", "this", "that", "swabi", "platform"}
@@ -172,6 +188,32 @@ def _requested_limit_from_result(
     return _extract_requested_limit(question)
 
 
+def _extract_package_location(question: str) -> str | None:
+    """Extract an explicitly stated package destination without LLM guessing."""
+    location_before_packages = _LOCATION_BASED_PACKAGE_SEARCH.search(question)
+    if location_before_packages:
+        return location_before_packages.group("location").strip()
+
+    based_match = _PACKAGE_BASED_LOCATION.search(question)
+    if based_match:
+        return based_match.group(1).strip()
+
+    for match in _PACKAGE_LOCATION_HINT.finditer(question):
+        candidate = _PACKAGE_LOCATION_END.split(match.group(1), maxsplit=1)[0].strip()
+        if not candidate:
+            continue
+        first_term = candidate.casefold().split()[0]
+        if first_term not in _NON_LOCATION_TERMS and first_term not in {
+            "a",
+            "an",
+            "all",
+            "any",
+            "available",
+        }:
+            return candidate
+    return None
+
+
 @dataclass
 class ResolvedIntent:
     intent: LiveDataIntent
@@ -215,6 +257,23 @@ class IntentResolver:
                 reason="general_process_question",
             )
 
+        package_location = _extract_package_location(question)
+        if (
+            package_location
+            and (
+                _PACKAGE_BASED_LOCATION.search(question)
+                or _LOCATION_BASED_PACKAGE_SEARCH.search(question)
+            )
+            and _DIRECT_PACKAGE_SEARCH.search(question)
+        ):
+            return ResolvedIntent(
+                intent=LiveDataIntent.PACKAGE_SEARCH,
+                entities={"query": package_location},
+                source="deterministic",
+                reason="location_package_search",
+                requested_limit=_extract_requested_limit(question),
+            )
+
         # Exact detail lookups are a safe fast path; list/search requests are
         # classified semantically so limits and contextual filters are retained.
         if det.intent not in _LIST_INTENTS and det.intent != LiveDataIntent.NONE:
@@ -244,6 +303,14 @@ class IntentResolver:
             match.group(1).strip().lower().split()[0]
             for match in _PACKAGE_LOCATION_HINT.finditer(question)
         ]
+        based_location = _PACKAGE_BASED_LOCATION.search(question)
+        if based_location:
+            location_matches.append(based_location.group(1).strip().lower().split()[0])
+        location_before_packages = _LOCATION_BASED_PACKAGE_SEARCH.search(question)
+        if location_before_packages:
+            location_matches.append(
+                location_before_packages.group("location").strip().lower().split()[0]
+            )
         has_unresolved_location = any(
             location not in _NON_LOCATION_TERMS for location in location_matches
         )
@@ -298,7 +365,12 @@ class IntentResolver:
             )
             return ResolvedIntent(
                 intent=llm_result.intent,
-                entities=llm_result.entities,
+                entities=(
+                    {**llm_result.entities, "query": package_location}
+                    if llm_result.intent == LiveDataIntent.PACKAGE_SEARCH
+                    and package_location
+                    else llm_result.entities
+                ),
                 source="llm",
                 reason=f"llm_conf={llm_result.confidence:.2f}",
                 use_rag=knowledge_requested,
@@ -315,6 +387,15 @@ class IntentResolver:
                 source="deterministic",
                 reason=det.reason or "deterministic_fallback",
                 use_rag=knowledge_requested,
+                requested_limit=_extract_requested_limit(question),
+            )
+
+        if _DIRECT_PACKAGE_SEARCH.search(question) and package_location:
+            return ResolvedIntent(
+                intent=LiveDataIntent.PACKAGE_SEARCH,
+                entities={"query": package_location},
+                source="deterministic",
+                reason="catalogue_search_fallback",
                 requested_limit=_extract_requested_limit(question),
             )
 

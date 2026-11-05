@@ -43,7 +43,10 @@ from app.capabilities.support.live_data_classifier import (
     VENDOR_ONLY,
     LiveDataIntent,
 )
-from app.capabilities.support.live_data_format import format_for_intent
+from app.capabilities.support.live_data_format import (
+    filter_package_payload_by_location,
+    format_for_intent,
+)
 from app.capabilities.support.prompts import (
     SUPPORT_PROMPT_VERSION,
     SUPPORT_SYSTEM_PROMPT,
@@ -72,12 +75,14 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _OUT_OF_SCOPE_MESSAGE = (
-    "That's outside what I can help with. I can answer questions about Swabi and travel."
+    "Sorry, I can help with Swabi and travel-related questions. For other "
+    "topics, please contact Swabi Support or consult the relevant service."
 )
 
 _VERSION_UNAVAILABLE_MESSAGE = (
-    "The knowledge base is currently being updated. Please try again "
-    "shortly or contact Swabi support."
+    "Sorry, verified support information is temporarily unavailable. Please "
+    "try again shortly, check the relevant section in the Swabi app, or "
+    "contact Swabi Support for help."
 )
 
 _SIGN_IN_MESSAGE = "Please sign in to view your live information."
@@ -93,7 +98,8 @@ _PUBLIC_INTENTS: set[LiveDataIntent] = {
 _NOT_YET_IMPLEMENTED: set[LiveDataIntent] = set()
 
 _NOT_YET_IMPLEMENTED_MESSAGE = (
-    "That information isn't available right now. Please try again shortly."
+    "Sorry, I can't retrieve that information right now. Please check the "
+    "relevant section in the Swabi app or contact Swabi Support for help."
 )
 _UNSUPPORTED_PACKAGE_FILTER_REQUEST = re.compile(
     r"\b(winter|summer|spring|autumn|fall|january|february|march|april|"
@@ -116,16 +122,16 @@ def _question_hash(question: str) -> str:
 def _insufficient_message(audience: str) -> str:
     if audience == "vendor":
         return (
-            "I couldn't find verified guidance for that. For current vendor "
-            "information, check New Enquiries, your bids, Wallet or "
-            "Transactions, Withdrawals, or Subscription in the vendor area "
-            "of the app. For policy questions or unresolved issues, contact "
-            "Swabi support."
+            "Sorry, I couldn't find verified information to answer that. "
+            "Please check New Enquiries, Bids, Wallet or Transactions, "
+            "Withdrawals, or Subscription in the vendor area of the Swabi app. "
+            "If you still need help, please contact Swabi Support."
         )
     return (
-        "I couldn't find verified guidance for that. For current trip or "
-        "account information, check the relevant Packages, Enquiries, Bids, "
-        "Bookings, or Payments section in the app, or contact Swabi support."
+        "Sorry, I couldn't find verified information to answer that. Please "
+        "check the relevant Packages, Enquiries, Bids, Bookings, or Payments "
+        "section in the Swabi app. If you still need help, please contact "
+        "Swabi Support."
     )
 
 def _log_support_stage(
@@ -150,15 +156,15 @@ def _log_support_stage(
 def _live_data_message(audience: str) -> str:
     if audience == "vendor":
         return (
-            "I couldn't identify a live-data service for that vendor "
-            "question. Check New Enquiries, your bids, Wallet or "
-            "Transactions, Withdrawals, or Subscription in the vendor area "
-            "of the app, or contact Swabi support."
+            "Sorry, I can't retrieve that live vendor information right now. "
+            "Please check New Enquiries, Bids, Wallet or Transactions, "
+            "Withdrawals, or Subscription in the vendor area of the Swabi app, "
+            "or contact Swabi Support for help."
         )
     return (
-        "I couldn't identify a live-data service for that request. Check the "
-        "relevant Enquiries, Bids, Bookings, or Payments section in the app, "
-        "or contact Swabi support."
+        "Sorry, I can't retrieve that live information right now. Please "
+        "check the relevant Enquiries, Bids, Bookings, or Payments section in "
+        "the Swabi app, or contact Swabi Support for help."
     )
 
 
@@ -447,18 +453,53 @@ def ask(
         else:
             live_stage_started = time.perf_counter()
             try:
+                fetch_entities = {
+                    **resolved.entities,
+                    **(
+                        {"limit": requested_limit}
+                        if requested_limit is not None
+                        else {}
+                    ),
+                }
+                package_search_query = None
+                if resolved.intent == LiveDataIntent.PACKAGE_SEARCH:
+                    package_search_query = (
+                        resolved.entities.get("destination")
+                        or resolved.entities.get("query")
+                    )
+                    # Fetch enough catalogue rows to apply the requested
+                    # destination and result limit locally if the API ignores
+                    # its destination filter.
+                    fetch_entities["limit"] = MAX_SUPPORT_LIST_ITEMS
                 endpoint_label, payload = fetch_for_intent(
                     resolved.intent,
                     user_jwt=user_jwt,
-                    entities={
-                        **resolved.entities,
-                        **(
-                            {"limit": requested_limit}
-                            if requested_limit is not None
-                            else {}
-                        ),
-                    },
+                    entities=fetch_entities,
                 )
+                if (
+                    resolved.intent == LiveDataIntent.PACKAGE_SEARCH
+                    and isinstance(package_search_query, str)
+                    and package_search_query.strip()
+                    and isinstance(payload, dict)
+                    and not filter_package_payload_by_location(
+                        payload,
+                        package_search_query,
+                    )["packages"]
+                ):
+                    log.info(
+                        "support_package_destination_filter_retry",
+                        extra={
+                            "q_hash": q_hash,
+                            "destination": package_search_query,
+                        },
+                    )
+                    _, unfiltered_payload = fetch_for_intent(
+                        resolved.intent,
+                        user_jwt=user_jwt,
+                        entities={"limit": MAX_SUPPORT_LIST_ITEMS},
+                    )
+                    if isinstance(unfiltered_payload, dict):
+                        payload = unfiltered_payload
                 live_text = format_for_intent(
                     resolved.intent,
                     payload,
@@ -466,6 +507,11 @@ def ask(
                         MAX_SUPPORT_LIST_ITEMS
                         if summarize_payment_history
                         else requested_limit
+                    ),
+                    search_query=(
+                        package_search_query
+                        if isinstance(package_search_query, str)
+                        else None
                     ),
                 )
                 if (
@@ -501,14 +547,15 @@ def ask(
                 if not use_rag:
                     return _fallback(
                         answer=(
-                            "I couldn't retrieve your live information right now. "
-                            "Please try again or check the app directly."
+                            "Sorry, I couldn't retrieve your live information "
+                            "right now. Please check the relevant section in the "
+                            "Swabi app or contact Swabi Support for help."
                         ),
                         answer_type=AnswerType.NEEDS_LIVE_DATA,
                         knowledge_version="",
                     )
                 live_data_warning = (
-                    "I couldn't retrieve your live account information. "
+                    "Sorry, I couldn't retrieve your live account information. "
                     "The answer below uses knowledge-base information only."
                 )
             finally:
@@ -761,6 +808,22 @@ def ask(
                 if summarize_payment_history
                 else live_text
             ),
+            citation_chunk_ids=[],
+            confidence=0.7,
+        )
+
+    if (
+        resolved.intent == LiveDataIntent.PACKAGE_SEARCH
+        and live_data_used
+        and live_text
+    ):
+        # Catalogue answers are serialized from the verified records rather
+        # than trusting generated text to preserve destination and package IDs.
+        # This also prevents mixed RAG/catalogue questions from reintroducing
+        # packages excluded by the destination filter.
+        llm_out = LLMAnswerOutput(
+            answer_type=AnswerType.ANSWERED,
+            answer=live_text,
             citation_chunk_ids=[],
             confidence=0.7,
         )
