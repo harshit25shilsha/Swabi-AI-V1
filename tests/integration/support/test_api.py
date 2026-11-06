@@ -39,6 +39,18 @@ def test_missing_authorization_returns_401():
     assert r.status_code == 401
 
 
+def test_openapi_declares_bearer_security_for_support_ask():
+    schema = client.get("/openapi.json").json()
+    operation = schema["paths"]["/api/v1/support/ask"]["post"]
+
+    assert operation["security"] == [{"UserBearerAuth": []}]
+    assert schema["components"]["securitySchemes"]["UserBearerAuth"] == {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "User JWT forwarded to the Swabi backend for live-data requests.",
+    }
+
+
 def test_empty_bearer_returns_401():
     r = client.post(
         "/api/v1/support/ask",

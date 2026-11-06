@@ -32,6 +32,22 @@ Swabi APIs     = Live business data (called by AI Support, never direct DB)
 
 ### Request flows
 
+**Gateway mode (target production flow for every AI capability):**
+
+```text
+Frontend -- user JWT --> NestJS validates identity and scopes
+                             |
+                             +-- signed principal assertion --> private AI service
+                                                                    |
+                                             KB answer or delegated live NestJS API read
+```
+
+NestJS validates before both KB-only and live Support queries. For a live
+request, the AI service forwards the original opaque user JWT to the
+allowlisted NestJS API; NestJS authorizes the requested resource.
+
+**Legacy migration flows (temporary only):**
+
 **Service-to-service (Chat Safety, Enquiry Understanding):**
 
 ```
@@ -64,9 +80,9 @@ For a full architecture reference, see
 | `GET` | `/health` | none | Liveness. Status, uptime, versions. |
 | `GET` | `/ready` | none | Readiness. Checks Redis. |
 | `GET` | `/metrics` | none | Prometheus text. Counters + circuit state. |
-| `POST` | `/api/v1/validate-message` | service token | Chat Safety classification. |
-| `POST` | `/api/v1/enquiry/understand` | service token | Enquiry Understanding extraction. |
-| `POST` | `/api/v1/support/ask` | user bearer token | RAG support answer; uses approved knowledge and/or live Swabi data. |
+| `POST` | `/api/v1/validate-message` | gateway assertion + `ai:chat-safety` | Chat Safety classification. |
+| `POST` | `/api/v1/enquiry/understand` | gateway assertion + `ai:enquiry:understand` | Enquiry Understanding extraction. |
+| `POST` | `/api/v1/support/ask` | gateway assertion + `ai:support:ask` | RAG support answer; uses approved knowledge and/or delegated live data. |
 
 `/health`, `/ready`, and `/metrics` are unauthenticated by design — bind
 behind a reverse proxy that restricts inbound access.
@@ -423,7 +439,51 @@ deployment/configuration/latency checks. The current evaluation reports are
 
 ## Authentication
 
-There are **two distinct authentication flows**. They must not be conflated.
+### Current target: NestJS gateway authentication
+
+All three user-facing AI routes have one target security boundary: NestJS
+validates the user JWT, derives user role/audience and allowed AI capabilities,
+then calls this private AI service. NestJS supplies the original Bearer token
+plus a signed, short-lived principal assertion. The AI service checks the
+assertion before it starts Chat Safety, Enquiry, KB retrieval, or a live-data
+request.
+
+The AI service keeps the user JWT opaque: it never decodes, logs, or persists
+it. When a question needs personal live data (for example, a coins balance),
+the service forwards the original JWT to the appropriate NestJS API; NestJS
+then authorizes that resource read again.
+
+```ini
+# Production target, after NestJS implements the signed-header contract
+AI_AUTH_MODE=gateway
+AI_GATEWAY_AUTH_SECRET=<same-long-random-secret-in-NestJS-and-AI>
+```
+
+The gateway assertion contains a verified user ID, `customer` or `vendor`
+audience, allowed scopes, and a short expiry. Required scopes are
+`ai:chat-safety`, `ai:enquiry:understand`, and `ai:support:ask`. For Support,
+the client-provided `audience` cannot differ from this verified audience.
+
+See [the NestJS-to-AI gateway contract](docs/auth_gateway_contract.md) for
+the exact headers, HMAC signing process, and deployment protections. The AI
+service must not be publicly reachable; frontend requests go through NestJS.
+
+### Legacy migration mode (temporary)
+
+Until NestJS sends the signed assertion, use:
+
+```ini
+AI_AUTH_MODE=legacy_service_token
+GUARDRAIL_API_TOKEN=<existing-service-token>
+AI_GATEWAY_AUTH_SECRET=<new-shared-gateway-secret>
+```
+
+In legacy mode, Chat Safety and Enquiry use `GUARDRAIL_API_TOKEN`. Support
+accepts a non-empty Bearer token and forwards it for live reads, but its
+KB-only path is not truly JWT-verified. Do not retain this mode for production
+after NestJS gateway integration is available.
+
+### Legacy behavior retained during migration
 
 ### 1. Inbound service-to-service
 
@@ -563,6 +623,11 @@ aliases for legacy guardrail code compatibility.
 
 - `GROQ_API_KEY`
 - `GUARDRAIL_API_TOKEN`
+
+Gateway mode also requires `AI_GATEWAY_AUTH_SECRET`, shared only between the
+NestJS and AI-service environments. `AI_AUTH_MODE` defaults to `gateway`;
+set it to `legacy_service_token` only during the NestJS migration described
+above.
 
 **Everything else has a development-safe default.**
 

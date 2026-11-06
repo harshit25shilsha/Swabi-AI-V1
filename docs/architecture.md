@@ -94,9 +94,9 @@ docs/
 | `GET` | `/health` | none | Liveness. Returns status, uptime, versions. |
 | `GET` | `/ready` | none | Readiness. Checks Redis. |
 | `GET` | `/metrics` | none | Prometheus text. Counters + circuit state. |
-| `POST` | `/api/v1/validate-message` | service token | Chat Safety classification. |
-| `POST` | `/api/v1/enquiry/understand` | service token | Enquiry Understanding extraction. |
-| `POST` | `/api/v1/support/ask` | user bearer token | Knowledge-grounded support and live Swabi reads. |
+| `POST` | `/api/v1/validate-message` | gateway assertion + `ai:chat-safety` | Chat Safety classification. |
+| `POST` | `/api/v1/enquiry/understand` | gateway assertion + `ai:enquiry:understand` | Enquiry Understanding extraction. |
+| `POST` | `/api/v1/support/ask` | gateway assertion + `ai:support:ask` | Knowledge-grounded support and delegated live reads. |
 
 Public/unauthenticated routes must sit behind a reverse proxy that
 restricts inbound access. This is documented and expected.
@@ -130,7 +130,41 @@ Do not change registration order without updating those tests.
 
 ## 5. Authentication model
 
-There are **two distinct auth flows**. They must not be conflated.
+### Target state: NestJS gateway verification
+
+NestJS is the public authentication gateway for every AI route. It validates
+the user JWT, derives the authenticated user, audience, and authorized AI
+scopes, then calls the private AI service with the original Bearer JWT plus a
+signed, short-lived principal assertion. The AI service verifies that
+assertion before it performs any LLM, RAG, or live-data work.
+
+`app/core/gateway_auth.py` validates the assertion HMAC and expiry;
+`app/core/route_auth.py` requires the route capability. Missing, invalid, or
+expired authentication context returns `401`; an authenticated principal that
+lacks the capability returns `403`.
+
+The AI service treats the user JWT as opaque. For user-specific live reads it
+forwards that same token to NestJS, where NestJS remains authoritative for the
+particular bookings, wallet, payments, enquiries, or vendor resource. No
+generic service token may replace a user JWT for a personal-data request.
+
+The full header format and deployment requirements are in
+[`auth_gateway_contract.md`](auth_gateway_contract.md). AI must be private;
+NestJS/public ingress must strip the trusted-principal headers from browser
+traffic and use mTLS or equivalent workload authentication to AI.
+
+### Legacy migration mode (temporary)
+
+`AI_AUTH_MODE=legacy_service_token` preserves the prior behavior while NestJS
+is being upgraded. It uses `GUARDRAIL_API_TOKEN` for Chat Safety and Enquiry.
+Support still forwards an opaque user token for live reads, but its KB-only
+path only checks for a non-empty Bearer token. This mode therefore does not
+close the KB authentication gap and is not the production target.
+
+### Legacy behavior retained during migration
+
+The remaining subsections describe the old behavior retained only when
+`AI_AUTH_MODE=legacy_service_token`; they are not the gateway-mode design.
 
 ### 5.1 Inbound — service-to-service
 
@@ -333,6 +367,12 @@ readers).
 
 - `GROQ_API_KEY`
 - `GUARDRAIL_API_TOKEN`
+
+Gateway mode additionally requires `AI_GATEWAY_AUTH_SECRET`. It must be the
+same secret in the NestJS and AI-service environments, is used only to sign
+and verify the private principal assertion, and is not a JWT signing key.
+`AI_AUTH_MODE` defaults to `gateway`; use `legacy_service_token` only during
+the staged NestJS migration.
 
 **Have safe development defaults:** everything else.
 
@@ -652,11 +692,13 @@ it into multiple LLM calls unless accuracy demands it.
 }
 ```
 
-The route requires a user `Authorization: Bearer ...` header. It validates
-that a non-empty bearer token was provided, then passes it explicitly to
-the support service. Public catalogue intents may call NestJS without user
-authentication; private customer/vendor intents require the JWT. NestJS
-remains responsible for authorization and business state.
+In gateway mode, the route requires a verified NestJS principal assertion and
+the `ai:support:ask` capability before any intent resolution, retrieval, or
+answer generation. The assertion provides the trusted customer/vendor
+audience; the request-body `audience` must match it. The original user
+`Authorization: Bearer ...` token remains opaque and is passed explicitly to
+the support service only for delegated live API calls. NestJS remains
+responsible for resource authorization and business state.
 
 ### Routing and answer source
 
@@ -691,12 +733,13 @@ intent-classifier call. Contextual or destination-filtered catalogue requests
 still use semantic classification.
 
 Live transport currently resides in
-`app/capabilities/support/live_data.py`. It calls NestJS, forwards the JWT
-only when provided, unwraps response envelopes, and decrypts encrypted
-payloads when configured. It does not access PostgreSQL. Public intents
-include package search/detail, public activity search, and popular
-destinations. Customer/vendor private intents use their corresponding
-NestJS APIs.
+`app/capabilities/support/live_data.py`. It calls NestJS, forwards the
+original user JWT for a user-specific request, unwraps response envelopes,
+and decrypts encrypted payloads when configured. It does not access
+PostgreSQL. Public intents include package search/detail, public activity
+search, and popular destinations; the outer Support request remains
+gateway-authenticated even when the downstream catalogue API is public.
+Customer/vendor private intents use their corresponding NestJS APIs.
 
 The package list API currently supports `page`, `limit`, and `destination`.
 It does not expose season, travel-date availability, budget, or group-size

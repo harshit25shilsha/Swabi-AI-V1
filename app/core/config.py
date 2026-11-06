@@ -10,7 +10,9 @@ Precedence (highest first):
 
 from __future__ import annotations
 
-from pydantic import Field
+from typing import Literal
+
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -72,6 +74,16 @@ class Settings(BaseSettings):
     # Guardrail service (inbound auth for /api/v1/validate-message)
     guardrail_api_token: str  # required
 
+    # Inbound user authentication
+    #
+    # In gateway mode NestJS validates the user JWT and attaches a signed,
+    # short-lived principal assertion for this private service.  The AI
+    # service verifies the assertion but deliberately does not decode the
+    # user JWT.  `legacy_service_token` exists only for the staged migration
+    # from the historical service-token routes.
+    ai_auth_mode: Literal["gateway", "legacy_service_token"] = "gateway"
+    ai_gateway_auth_secret: str = ""
+
     # Feature flags
 
     enable_rag: bool = True
@@ -104,6 +116,14 @@ class Settings(BaseSettings):
     # Leave empty if the backend returns plain JSON.
     swabi_response_passphrase: str = ""
     swabi_response_kdf: str = "md5"  # "md5" (CryptoJS default) or "sha256"
+
+    @model_validator(mode="after")
+    def _require_gateway_secret(self) -> "Settings":
+        if self.ai_auth_mode == "gateway" and not self.ai_gateway_auth_secret:
+            raise ValueError(
+                "AI_GATEWAY_AUTH_SECRET is required when AI_AUTH_MODE=gateway"
+            )
+        return self
 
     @property
     def GROQ_API_KEY(self) -> str:
