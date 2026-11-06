@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from app.api.routes.chat_safety import router as chat_safety_router
+from app.api.routes.enquiry import router as enquiry_router
 from app.api.routes.health import router as health_router
+from app.api.routes.metrics import router as metrics_router
+from app.api.routes.support import router as support_router
+from app.capabilities.support.live_data import (
+    close_live_data_client,
+    initialize_live_data_client,
+)
 from app.core.auth_context import set_user_id, set_user_jwt
 from app.core.config import settings
 from app.core.exceptions import (
@@ -22,17 +32,89 @@ from app.core.exceptions import (
 )
 from app.core.logging import request_id_var, setup_logging
 from app.core.redis import redis_manager
+from app.llm.groq import close_sync_client
+from app.observability.middleware import ObservabilityMiddleware
 
 setup_logging()
+
+logger = logging.getLogger(__name__)
+
+def _warm_support_bm25() -> None:
+    """Warm BM25 indexes for supported customer/vendor retrieval scopes.
+
+    Warm-up is best-effort. A Qdrant or version-authority failure must not
+    prevent the FastAPI application from starting.
+    """
+    try:
+        from app.capabilities.support.service import _get_retriever
+        from app.rag.version_check import check_version_authority
+
+        retriever = _get_retriever()
+
+        # Use the same version-authority check as the support request path.
+        version = check_version_authority(store=retriever.store)
+
+        if not version.ok or not version.local_version:
+            logger.warning(
+                "BM25 startup warm-up skipped: knowledge version unavailable",
+                extra={
+                    "event": "rag_bm25_startup_warmup_skipped",
+                    "reason": version.reason,
+                },
+            )
+            return
+
+        # "both" and omitted values have identical filters. The store
+        # normalizes them to the same cache key.
+        audiences = (None, "customer", "vendor")
+        areas = (None, "swabi", "travel")
+
+        warmed = 0
+
+        for audience in audiences:
+            for area in areas:
+                retriever.store.warm_keyword_index(
+                    audience=audience,
+                    area=area,
+                    index_version=version.local_version,
+                )
+                warmed += 1
+
+        logger.info(
+            "BM25 startup warm-up completed",
+            extra={
+                "event": "rag_bm25_startup_warmup_completed",
+                "knowledge_version": version.local_version,
+                "scope_attempts": warmed,
+            },
+        )
+
+    except Exception:
+        logger.warning(
+            "BM25 startup warm-up failed; runtime indexing remains available",
+            extra={"event": "rag_bm25_startup_warmup_failed"},
+            exc_info=True,
+        )
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Connect Redis on startup and close on shutdown."""
+    """Connect services, warm RAG indexes, and close resources."""
     await redis_manager.connect()
+
     try:
+        # Initialize the shared Swabi API connection pool.
+        initialize_live_data_client()
+
+        # Qdrant and BM25 operations are synchronous. Run them outside
+        # the event loop so startup work does not block async execution.
+        await asyncio.to_thread(_warm_support_bm25)
+
         yield
+
     finally:
+        close_live_data_client()
+        close_sync_client()
         await redis_manager.close()
 
 
@@ -42,14 +124,30 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.include_router(health_router)
-
-
 # Middleware
+#
+# FastAPI/Starlette wraps middleware LIFO: the LAST one added is the
+# OUTERMOST and runs first on the request. To achieve the target order:
+#
+#     request_id -> auth_context -> observability -> route
+#
+# we add them in reverse:
+#     1. observability (innermost)
+#     2. auth_context
+#     3. request_id (outermost)
+
+
+# Routes that legitimately carry a user JWT intended for outbound Swabi
+# calls. Service-to-service routes (e.g. /api/v1/validate-message) are
+# intentionally absent — see integration plan §2.
+USER_JWT_ROUTE_PREFIXES: tuple[str, ...] = (
+    "/enquiry",
+    "/assistant",
+    # future user-facing routes are added here as they land
+)
 
 
 def _extract_bearer_token(auth_header: str) -> str | None:
-    """Extract an opaque bearer token. Returns None on any non-Bearer scheme."""
     if not auth_header:
         return None
     scheme, _, value = auth_header.partition(" ")
@@ -59,25 +157,33 @@ def _extract_bearer_token(auth_header: str) -> str | None:
     return token or None
 
 
+# 1. Observability (innermost — runs last on request, first on response)
+app.add_middleware(ObservabilityMiddleware)
+
+
+# 2. Auth context
 @app.middleware("http")
 async def auth_context_middleware(request: Request, call_next):
-    """Capture the caller's JWT and user id for the duration of the request.
+    path = request.url.path
 
-    The token is intentionally not logged, not decoded, and not persisted.
-    """
-    auth_header = request.headers.get("Authorization", "")
-    token = _extract_bearer_token(auth_header)
-
-    set_user_jwt(token)
-    set_user_id(request.headers.get("X-User-Id"))
+    if any(path.startswith(p) for p in USER_JWT_ROUTE_PREFIXES):
+        auth_header = request.headers.get("Authorization", "")
+        token = _extract_bearer_token(auth_header)
+        set_user_jwt(token)
+        set_user_id(request.headers.get("X-User-Id"))
+    else:
+        # Explicitly clear on service-to-service paths so a mixed-route
+        # process cannot leak context across requests.
+        set_user_jwt(None)
+        set_user_id(None)
 
     return await call_next(request)
 
 
+# 3. Request ID (outermost — runs first on request, last on response)
 @app.middleware("http")
 async def request_id_middleware(request: Request, call_next):
-    """Attach a request ID to every request and propagate it in the response."""
-    rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    rid = request.headers.get("X-Request-ID") or f"gr_{uuid.uuid4().hex[:16]}"
     token = request_id_var.set(rid)
     try:
         response = await call_next(request)
@@ -87,42 +193,72 @@ async def request_id_middleware(request: Request, call_next):
     return response
 
 
+# Routers
+
+app.include_router(health_router)
+app.include_router(metrics_router)
+app.include_router(chat_safety_router)
+app.include_router(enquiry_router)
+app.include_router(support_router)
+
+
 # Centralized exception handlers
 
 
 @app.exception_handler(AITimeoutError)
 async def _ai_timeout_handler(_request: Request, exc: AITimeoutError):
-    return JSONResponse(status_code=504, content={"error": "ai_timeout", "detail": str(exc)})
+    return JSONResponse(
+        status_code=504,
+        content={"error": "ai_timeout", "detail": str(exc)},
+    )
 
 
 @app.exception_handler(AIProviderError)
 async def _ai_provider_handler(_request: Request, exc: AIProviderError):
-    return JSONResponse(status_code=502, content={"error": "ai_provider", "detail": str(exc)})
+    return JSONResponse(
+        status_code=502,
+        content={"error": "ai_provider", "detail": str(exc)},
+    )
 
 
 @app.exception_handler(AIValidationError)
 async def _ai_validation_handler(_request: Request, exc: AIValidationError):
-    return JSONResponse(status_code=422, content={"error": "ai_validation", "detail": str(exc)})
+    return JSONResponse(
+        status_code=422,
+        content={"error": "ai_validation", "detail": str(exc)},
+    )
 
 
 @app.exception_handler(SwabiAuthenticationError)
 async def _swabi_auth_handler(_request: Request, exc: SwabiAuthenticationError):
-    return JSONResponse(status_code=401, content={"error": "swabi_auth", "detail": str(exc)})
+    return JSONResponse(
+        status_code=401,
+        content={"error": "swabi_auth", "detail": str(exc)},
+    )
 
 
 @app.exception_handler(SwabiAPIError)
 async def _swabi_api_handler(_request: Request, exc: SwabiAPIError):
-    return JSONResponse(status_code=502, content={"error": "swabi_api", "detail": str(exc)})
+    return JSONResponse(
+        status_code=502,
+        content={"error": "swabi_api", "detail": str(exc)},
+    )
 
 
 @app.exception_handler(ToolExecutionError)
 async def _tool_handler(_request: Request, exc: ToolExecutionError):
-    return JSONResponse(status_code=500, content={"error": "tool", "detail": str(exc)})
+    return JSONResponse(
+        status_code=500,
+        content={"error": "tool", "detail": str(exc)},
+    )
 
 
 @app.exception_handler(ConfigurationError)
 async def _config_handler(_request: Request, exc: ConfigurationError):
-    return JSONResponse(status_code=500, content={"error": "configuration", "detail": str(exc)})
+    return JSONResponse(
+        status_code=500,
+        content={"error": "configuration", "detail": str(exc)},
+    )
 
 
 @app.get("/", include_in_schema=False)
