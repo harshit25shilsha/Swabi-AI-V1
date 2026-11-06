@@ -112,13 +112,13 @@
 version: "1.0.0"
 
 source_document: "Swabi Knowledge Base Source Document"
-source_version: "1.0"
+source_version: "1.1"
 source_format: markdown
 source_path: docs/knowledge_base.md
 # SHA-256 of docs/knowledge_base.md using ingestion text normalization.
-source_hash_expected: "c98a0e015b9eabd2838278cb3def69fd28e12d75fb3fc46756ea43afe2136ec8"
+source_hash_expected: "0163de64459e49488fc125e31aafc0b0e9743c804f76857145fec2fb72c35fae"
 default_source: "Swabi Policy KB"
-last_updated: "2026-10"
+last_updated: "2026-11"
 
 # ---------------------------------------------------------------------------
 # Categories — the source document's own section titles, verbatim.

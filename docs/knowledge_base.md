@@ -2,7 +2,7 @@
 
 **Customer Support & Travel Knowledge**
 
-- **Version:** 1.0
+- **Version:** 1.1
 - **Audience:** RAG ingestion team, AI support developer, content ops
 - **Source of truth:** Swabi BRD v1.1 (with Tracking Devices Amendment)
 - **Status:** Ready for ingestion
@@ -47,6 +47,15 @@ Each numbered sub-section (for example, 1.3 Community Guidelines) is a single ch
 ### 1.1 Terms of Service
 
 **Who it applies to:** Customers, vendors, and anyone using Swabi.
+
+#### What Swabi is for
+
+Swabi is an online travel marketplace that connects travelers (customers)
+with independent travel-service vendors. Customers can post trip enquiries,
+review vendor bids, or browse travel packages and activities. Swabi supports
+the discovery, booking, and payment process, including escrow where applicable
+under its policies. Swabi acts as an intermediary and payment facilitator; it
+does not own or operate the travel services offered by vendors.
 
 **Acceptance:** By creating an account, posting an enquiry, placing a bid, or making a payment, the user agrees to these terms.
 

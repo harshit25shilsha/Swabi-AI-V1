@@ -10,6 +10,7 @@ extractable, the parameters the fetcher needs (booking id, enquiry id,
 status filter). The service enforces audience match and JWT presence
 before any API call.
 """
+
 from __future__ import annotations
 
 import re
@@ -80,6 +81,11 @@ _UUID_RE = re.compile(
     r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
 )
 _BOOKING_CODE_RE = re.compile(r"\bBK-\d+\b", re.I)
+_PACKAGE_CODE_RE = re.compile(r"\bPKG-\d+\b", re.I)
+_PACKAGE_DETAIL_CONTEXT = re.compile(
+    r"\b(details?|information|info|about|describe|what\s+is|tell\s+me)\b",
+    re.I,
+)
 
 
 def _extract_uuid(q: str) -> str | None:
@@ -101,6 +107,14 @@ def _extract_booking_id(q: str) -> str | None:
     return m.group(0).upper() if m else None
 
 
+def _extract_package_id(q: str) -> tuple[str | None, str | None]:
+    package_uuid = _extract_uuid(q)
+    if package_uuid:
+        return package_uuid, None
+    match = _PACKAGE_CODE_RE.search(q)
+    return (None, match.group(0).upper()) if match else (None, None)
+
+
 # Supported by the backend: bookings = all|cancelled|pending|upcoming
 _BOOKING_STATUS_MAP: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bcancel(?:l?ed)?\b", re.I), "cancelled"),
@@ -119,9 +133,7 @@ _PAYMENT_STATUS_MAP: list[tuple[re.Pattern[str], str]] = [
 ]
 
 
-def _extract_status(
-    q: str, table: list[tuple[re.Pattern[str], str]]
-) -> str | None:
+def _extract_status(q: str, table: list[tuple[re.Pattern[str], str]]) -> str | None:
     for pattern, value in table:
         if pattern.search(q):
             return value
@@ -222,6 +234,8 @@ _MY_PAYMENTS = [
     re.compile(r"\bmy\s+payments?\b", re.I),
     re.compile(r"\bhow\s+much\s+did\s+i\s+pay\b", re.I),
     re.compile(r"\bpayment\s+history\b", re.I),
+    re.compile(r"\bmy\s+transactions?\s+history\b", re.I),
+    re.compile(r"\bmy\s+transactions?\b", re.I),
     re.compile(
         r"\bmy\s+(pending|complete(?:d)?|cancel(?:l?ed)?|failed)\s+"
         r"payments?\b",
@@ -233,6 +247,10 @@ _MY_PAYMENTS = [
         re.I,
     ),
 ]
+_CUSTOMER_TRANSACTION_HISTORY = re.compile(
+    r"\bmy\s+transactions?\s+history\b|\bmy\s+transactions?\b",
+    re.I,
+)
 
 _MY_COINS = [
     re.compile(r"\bmy\s+(swabi\s+)?coins?\b", re.I),
@@ -270,6 +288,7 @@ _VENDOR_TRANSACTIONS = [
         r"\b(my\s+)?(vendor\s+)?wallet\s+(transactions?|ledger|history)\b",
         re.I,
     ),
+    re.compile(r"\bmy\s+transactions?\s+history\b|\bmy\s+transactions?\b", re.I),
     re.compile(r"\b(bid|topup|top-up)\s+(history|transactions?)\b", re.I),
 ]
 
@@ -280,9 +299,7 @@ _VENDOR_WITHDRAWALS = [
 ]
 
 _VENDOR_INQUIRIES = [
-    re.compile(
-        r"\b(new\s+)?enquir(y|ies)\s+(i\s+can\s+bid|to\s+bid)\b", re.I
-    ),
+    re.compile(r"\b(new\s+)?enquir(y|ies)\s+(i\s+can\s+bid|to\s+bid)\b", re.I),
     re.compile(r"\bnew\s+enquir(y|ies)\b", re.I),
     re.compile(r"\binquir(y|ies)\s+to\s+bid\b", re.I),
     re.compile(r"\bmy\s+vendor\s+inquir(y|ies)\b", re.I),
@@ -290,9 +307,7 @@ _VENDOR_INQUIRIES = [
 
 _VENDOR_BOOKINGS = [
     re.compile(r"\bmy\s+vendor\s+bookings?\b", re.I),
-    re.compile(
-        r"\bbookings?\s+(assigned\s+to\s+me|for\s+my\s+trips?)\b", re.I
-    ),
+    re.compile(r"\bbookings?\s+(assigned\s+to\s+me|for\s+my\s+trips?)\b", re.I),
     re.compile(r"\btrips?\s+i('| a)m\s+(serving|running|operating)\b", re.I),
 ]
 
@@ -344,6 +359,20 @@ def classify(question: str, audience: str) -> ClassifiedIntent:
                 reason="customer-scope phrasing; vendor audience",
             )
 
+    # Public package detail can use either the backend UUID or visible code.
+    # A package code is specific enough to identify a requested catalogue
+    # item without consulting the LLM classifier first.
+    if _PACKAGE_DETAIL_CONTEXT.search(q):
+        package_id, package_code = _extract_package_id(q)
+        package_context = re.search(r"\bpackages?\b", q, re.I) is not None
+        if package_code or (package_id and package_context):
+            entities = {"package_id": package_id} if package_id else {"package_code": package_code}
+            return ClassifiedIntent(
+                LiveDataIntent.PACKAGE_DETAIL,
+                entities,
+                reason="package detail",
+            )
+
     # --- Customer intents ----------------------------------------------
     if audience == "customer":
         # MY_BOOKING_DETAIL requires both booking context and an ID.
@@ -368,60 +397,43 @@ def classify(question: str, audience: str) -> ClassifiedIntent:
             )
 
         if _matches(_MY_COIN_HISTORY, q):
-            return ClassifiedIntent(
-                LiveDataIntent.MY_COIN_HISTORY, reason="coin history"
-            )
+            return ClassifiedIntent(LiveDataIntent.MY_COIN_HISTORY, reason="coin history")
         if _matches(_MY_COINS, q):
-            return ClassifiedIntent(
-                LiveDataIntent.MY_COINS, reason="coin balance"
-            )
+            return ClassifiedIntent(LiveDataIntent.MY_COINS, reason="coin balance")
         if _matches(_MY_PAYMENTS, q):
             status = _extract_status(q, _PAYMENT_STATUS_MAP)
             entities = {"status": status} if status else {}
-            return ClassifiedIntent(
-                LiveDataIntent.MY_PAYMENTS, entities, reason="my payments"
+            reason = (
+                "customer transaction history"
+                if _CUSTOMER_TRANSACTION_HISTORY.search(q)
+                else "my payments"
             )
+            return ClassifiedIntent(LiveDataIntent.MY_PAYMENTS, entities, reason=reason)
         if _matches(_MY_BOOKINGS, q):
             status = _extract_status(q, _BOOKING_STATUS_MAP)
             entities = {"status": status} if status else {}
-            return ClassifiedIntent(
-                LiveDataIntent.MY_BOOKINGS, entities, reason="my bookings"
-            )
+            return ClassifiedIntent(LiveDataIntent.MY_BOOKINGS, entities, reason="my bookings")
         if _matches(_MY_ENQUIRIES, q):
-            return ClassifiedIntent(
-                LiveDataIntent.MY_ENQUIRIES, reason="my enquiries"
-            )
+            return ClassifiedIntent(LiveDataIntent.MY_ENQUIRIES, reason="my enquiries")
 
     # --- Vendor intents -------------------------------------------------
     elif audience == "vendor":
         if _matches(_VENDOR_SUBSCRIPTION, q):
-            return ClassifiedIntent(
-                LiveDataIntent.VENDOR_SUBSCRIPTION, reason="subscription"
-            )
+            return ClassifiedIntent(LiveDataIntent.VENDOR_SUBSCRIPTION, reason="subscription")
         if _matches(_VENDOR_WITHDRAWALS, q):
-            return ClassifiedIntent(
-                LiveDataIntent.VENDOR_WITHDRAWALS, reason="withdrawals"
-            )
+            return ClassifiedIntent(LiveDataIntent.VENDOR_WITHDRAWALS, reason="withdrawals")
         if _matches(_VENDOR_TRANSACTIONS, q):
             return ClassifiedIntent(
                 LiveDataIntent.VENDOR_TRANSACTIONS,
                 reason="wallet transactions",
             )
         if _matches(_VENDOR_WALLET, q):
-            return ClassifiedIntent(
-                LiveDataIntent.VENDOR_WALLET, reason="wallet balance"
-            )
+            return ClassifiedIntent(LiveDataIntent.VENDOR_WALLET, reason="wallet balance")
         if _matches(_VENDOR_INQUIRIES, q):
-            return ClassifiedIntent(
-                LiveDataIntent.VENDOR_INQUIRIES, reason="inquiries to bid"
-            )
+            return ClassifiedIntent(LiveDataIntent.VENDOR_INQUIRIES, reason="inquiries to bid")
         if _matches(_VENDOR_BIDS, q):
-            return ClassifiedIntent(
-                LiveDataIntent.VENDOR_BIDS, reason="my bids"
-            )
+            return ClassifiedIntent(LiveDataIntent.VENDOR_BIDS, reason="my bids")
         if _matches(_VENDOR_BOOKINGS, q):
-            return ClassifiedIntent(
-                LiveDataIntent.VENDOR_BOOKINGS, reason="vendor bookings"
-            )
+            return ClassifiedIntent(LiveDataIntent.VENDOR_BOOKINGS, reason="vendor bookings")
 
     return ClassifiedIntent(reason="no match")

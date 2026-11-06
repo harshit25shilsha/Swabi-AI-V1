@@ -1,4 +1,5 @@
 """Round-trip tests for the CryptoJS AES decryptor."""
+
 from __future__ import annotations
 
 import base64

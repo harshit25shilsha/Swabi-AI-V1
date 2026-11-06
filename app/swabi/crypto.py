@@ -14,6 +14,7 @@ H = MD5 (CryptoJS default) or SHA256 if the frontend was configured
 that way. Try MD5 first; switch to SHA256 if decryption produces
 garbage (PaddingError or non-UTF-8 output).
 """
+
 from __future__ import annotations
 
 import base64
@@ -47,9 +48,7 @@ def decrypt_payload(
         raise SwabiDecryptionError(f"invalid base64: {exc}") from exc
 
     if not blob.startswith(_SALT_PREFIX):
-        raise SwabiDecryptionError(
-            f"expected 'Salted__' prefix, got {blob[:8]!r}"
-        )
+        raise SwabiDecryptionError(f"expected 'Salted__' prefix, got {blob[:8]!r}")
     salt = blob[8:16]
     ciphertext = blob[16:]
 

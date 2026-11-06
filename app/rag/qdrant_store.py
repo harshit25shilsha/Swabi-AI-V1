@@ -1,15 +1,30 @@
 """Qdrant store wrapper."""
+
 from __future__ import annotations
 
+import os
+import re
+import threading
 import uuid
+from collections import OrderedDict
 from datetime import UTC, date, datetime, time
+from time import perf_counter
 from typing import Any
+
+import httpx
 
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.rag.schemas import Chunk, RetrievedChunk
 
 log = get_logger(__name__)
+
+_BM25_CACHE_MAXSIZE = 32
+_bm25_cache: OrderedDict[
+    tuple[str, str, str, str | None, str | None, date],
+    tuple[list[dict[str, Any]], list[list[str]], Any | None],
+] = OrderedDict()
+_bm25_cache_lock = threading.Lock()
 
 
 class QdrantStoreError(Exception):
@@ -53,17 +68,57 @@ def _qdrant_datetime(value: str | None) -> str | None:
     if value is None:
         return None
     parsed = date.fromisoformat(value)
-    return datetime.combine(parsed, time.min, tzinfo=UTC).isoformat(
-        timespec="seconds",
-    ).replace("+00:00", "Z")
+    return (
+        datetime.combine(parsed, time.min, tzinfo=UTC)
+        .isoformat(
+            timespec="seconds",
+        )
+        .replace("+00:00", "Z")
+    )
+
+
+def _retrieval_filter(
+    audience: str | None,
+    area: str | None,
+    *,
+    today: date | None = None,
+):
+    from qdrant_client.http import models as rest  # noqa: PLC0415
+
+    must: list = []
+    if audience and audience != "both":
+        must.append(
+            rest.FieldCondition(
+                key="audience",
+                match=rest.MatchAny(any=[audience, "both"]),
+            )
+        )
+    if area and area != "both":
+        must.append(
+            rest.FieldCondition(
+                key="area",
+                match=rest.MatchAny(any=[area, "both"]),
+            )
+        )
+    return rest.Filter(
+        must=[
+            *must,
+            _current_content_filter(today or datetime.now(UTC).date()),
+        ],
+    )
+
+
+def _tokenize(text: str) -> list[str]:
+    return re.findall(r"\w+", text.casefold())
+
+def _cache_scope_value(value: str | None) -> str | None:
+    """Normalize values whose retrieval filters are semantically identical."""
+    return None if value in (None, "both") else value
+
 
 
 class QdrantStore:
-    """Synchronous qdrant-client wrapper.
-
-    The FastAPI route that will use retrieval (Batch 2C) runs in a thread
-    pool, so sync is fine here.
-    """
+    """Synchronous Qdrant client wrapper for dense and keyword retrieval."""
 
     def __init__(
         self,
@@ -78,23 +133,56 @@ class QdrantStore:
         self.collection = collection or settings.qdrant_collection
         self.timeout = timeout or settings.qdrant_timeout
         self._client = None
+        self._client_lock = threading.Lock()
+        self._client_created_at: float | None = None
+        self._client_created_thread_id: int | None = None
 
     # -- Client
 
     def _get_client(self):
         if self._client is None:
-            try:
-                from qdrant_client import QdrantClient  # noqa: PLC0415
-            except ImportError as exc:
-                raise QdrantStoreError(
-                    "qdrant-client is not installed. "
-                    "Install with: pip install -r requirements-rag.txt"
-                ) from exc
-            self._client = QdrantClient(
-                url=self.url,
-                api_key=self.api_key,
-                timeout=self.timeout,
-            )
+            with self._client_lock:
+                if self._client is None:
+                    init_started = perf_counter()
+
+                    try:
+                        from qdrant_client import QdrantClient  # noqa: PLC0415
+                    except ImportError as exc:
+                        raise QdrantStoreError(
+                            "qdrant-client is not installed. "
+                            "Install with: pip install -r requirements-rag.txt"
+                        ) from exc
+
+                    connection_limits = httpx.Limits(
+                        max_connections=20,
+                        max_keepalive_connections=10,
+                        keepalive_expiry=30.0,
+                    )
+
+                    client = QdrantClient(
+                        url=self.url,
+                        api_key=self.api_key,
+                        timeout=self.timeout,
+                        limits=connection_limits,
+                    )
+
+                    self._client = client
+                    self._client_created_at = perf_counter()
+                    self._client_created_thread_id = threading.get_ident()
+
+                    log.info(
+                        "qdrant client initialized",
+                        extra={
+                            "event": "qdrant_client_initialized",
+                            "client_id": id(client),
+                            "process_id": os.getpid(),
+                            "thread_id": threading.get_ident(),
+                            "client_init_ms": round(
+                                (perf_counter() - init_started) * 1000, 2
+                            ),
+                        },
+                    )
+
         return self._client
 
     def ping(self) -> bool:
@@ -170,17 +258,15 @@ class QdrantStore:
         from qdrant_client.http import models as rest  # noqa: PLC0415
 
         if len(chunks) != len(vectors):
-            raise QdrantStoreError(
-                f"chunk/vector count mismatch: {len(chunks)} vs {len(vectors)}"
-            )
+            raise QdrantStoreError(f"chunk/vector count mismatch: {len(chunks)} vs {len(vectors)}")
 
         name = self.versioned_name(version)
         client = self._get_client()
         total = 0
 
         for start in range(0, len(chunks), batch_size):
-            batch_chunks = chunks[start:start + batch_size]
-            batch_vectors = vectors[start:start + batch_size]
+            batch_chunks = chunks[start : start + batch_size]
+            batch_vectors = vectors[start : start + batch_size]
             points = [
                 rest.PointStruct(
                     id=_point_id(c.metadata.chunk_id),
@@ -226,7 +312,8 @@ class QdrantStore:
                 ),
                 rest.CreateAliasOperation(
                     create_alias=rest.CreateAlias(
-                        collection_name=target, alias_name=alias,
+                        collection_name=target,
+                        alias_name=alias,
                     ),
                 ),
             ]
@@ -234,7 +321,8 @@ class QdrantStore:
             operations = [
                 rest.CreateAliasOperation(
                     create_alias=rest.CreateAlias(
-                        collection_name=target, alias_name=alias,
+                        collection_name=target,
+                        alias_name=alias,
                     ),
                 ),
             ]
@@ -249,6 +337,7 @@ class QdrantStore:
         except Exception as exc:  # noqa: BLE001
             log.warning("delete_collection %s failed: %s", name, exc)
 
+
     def search(
         self,
         query_vector: list[float],
@@ -257,61 +346,347 @@ class QdrantStore:
         audience: str | None = None,
         area: str | None = None,
         min_score: float | None = None,
+        index_version: str | None = None,
     ) -> list[RetrievedChunk]:
-        """Vector search through the alias (always the current version).
-
-        Filtering by audience and area happens inside Qdrant before
-        ranking. ``audience="customer"`` matches chunks with
-        audience=customer OR audience=both; a customer never receives
-        vendor-only content.
-        """
-        from qdrant_client.http import models as rest  # noqa: PLC0415
-
+        """Vector search with detailed client-side timing."""
         from app.rag.schemas import RetrievedChunk  # noqa: PLC0415
 
+        total_started = perf_counter()
+
+        # Measure client acquisition separately.
+        client_started = perf_counter()
         client = self._get_client()
-
-        must: list = []
-        if audience and audience != "both":
-            must.append(rest.FieldCondition(
-                key="audience",
-                match=rest.MatchAny(any=[audience, "both"]),
-            ))
-        if area and area != "both":
-            must.append(rest.FieldCondition(
-                key="area",
-                match=rest.MatchAny(any=[area, "both"]),
-            ))
-        query_filter = rest.Filter(
-            must=[*must, _current_content_filter(
-                datetime.now(UTC).date(),
-            )],
+        client_ms = round(
+            (perf_counter() - client_started) * 1000, 2
         )
 
-        response = client.query_points(
-            collection_name=self.alias_name(),
-            query=query_vector,
-            limit=top_k,
-            query_filter=query_filter,
-            score_threshold=min_score,
-            with_payload=True,
+        # Measure filter construction separately.
+        filter_started = perf_counter()
+        query_filter = _retrieval_filter(audience, area)
+        filter_ms = round(
+            (perf_counter() - filter_started) * 1000, 2
         )
-        hits = response.points
 
+        collection_name = (
+            self.versioned_name(index_version)
+            if index_version
+            else self.alias_name()
+        )
+
+        # This includes HTTP transport, waiting, and Qdrant response.
+        query_started = perf_counter()
+
+        try:
+            response = client.query_points(
+                collection_name=collection_name,
+                query=query_vector,
+                limit=top_k,
+                query_filter=query_filter,
+                score_threshold=min_score,
+                with_payload=True,
+            )
+        except Exception as exc:
+            query_ms = round(
+                (perf_counter() - query_started) * 1000, 2
+            )
+
+            log.exception(
+                "qdrant dense query failed",
+                extra={
+                    "event": "qdrant_dense_query_failed",
+                    "collection": collection_name,
+                    "client_id": id(client),
+                    "process_id": os.getpid(),
+                    "thread_id": threading.get_ident(),
+                    "client_created_thread_id": self._client_created_thread_id,
+                    "client_age_ms": (
+                        round(
+                            (perf_counter() - self._client_created_at) * 1000,
+                            2,
+                        )
+                        if self._client_created_at is not None
+                        else None
+                    ),
+                    "client_acquire_ms": client_ms,
+                    "filter_ms": filter_ms,
+                    "query_ms": query_ms,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            raise
+
+        query_ms = round(
+            (perf_counter() - query_started) * 1000, 2
+        )
+
+        # Measure response-to-object conversion.
+        mapping_started = perf_counter()
         out: list[RetrievedChunk] = []
-        for hit in hits:
+
+        for hit in response.points:
             payload = hit.payload or {}
-            out.append(RetrievedChunk(
-                chunk_id=str(payload.get("chunk_id", "")),
-                section_id=str(payload.get("section_id", "")),
-                section_path=str(payload.get("section_path", "")),
-                text=str(payload.get("text", "")),
-                score=float(hit.score),
-            ))
+            out.append(
+                RetrievedChunk(
+                    chunk_id=str(payload.get("chunk_id", "")),
+                    section_id=str(payload.get("section_id", "")),
+                    section_path=str(payload.get("section_path", "")),
+                    text=str(payload.get("text", "")),
+                    score=float(hit.score),
+                )
+            )
+
+        mapping_ms = round(
+            (perf_counter() - mapping_started) * 1000, 2
+        )
+        total_ms = round(
+            (perf_counter() - total_started) * 1000, 2
+        )
+
+        log.info(
+            "rag qdrant dense search timing",
+            extra={
+                "event": "rag_qdrant_dense_timing",
+                "collection": collection_name,
+                "client_ms": client_ms,
+                "filter_ms": filter_ms,
+                "query_ms": query_ms,
+                "mapping_ms": mapping_ms,
+                "total_ms": total_ms,
+                "result_count": len(out),
+                "audience": audience,
+                "area": area,
+                "index_version": index_version,
+                "client_id": id(client),
+                "process_id": os.getpid(),
+                "thread_id": threading.get_ident(),
+                "client_created_thread_id": self._client_created_thread_id,
+                "client_age_ms": (
+                    round(
+                        (perf_counter() - self._client_created_at) * 1000,
+                        2,
+                    )
+                    if self._client_created_at is not None
+                    else None
+                ),
+            },
+        )
+
         return out
 
 
+    def warm_keyword_index(
+        self,
+        *,
+        audience: str | None,
+        area: str | None,
+        index_version: str,
+    ) -> bool:
+        """Build the BM25 cache for one exact support retrieval scope.
+
+        Uses the same keyword_search implementation as live requests, so
+        cache construction, filtering, and policy-date handling stay identical.
+        """
+        if not index_version:
+            raise ValueError("index_version is required for BM25 warm-up")
+
+        self.keyword_search(
+            "__swabi_startup_index_warmup_7f3a9d__",
+            top_k=1,
+            audience=audience,
+            area=area,
+            index_version=index_version,
+        )
+        return True
+
+
+
+    def keyword_search(
+        self,
+        query: str,
+        *,
+        top_k: int = 5,
+        audience: str | None = None,
+        area: str | None = None,
+        index_version: str | None = None,
+    ) -> list[RetrievedChunk]:
+        """Rank current, eligible chunks with BM25 over their stored text.
+
+        Logs cache hit/miss, index-build duration and search duration.
+        Query and document text are never included in the logs.
+        """
+        try:
+            from rank_bm25 import BM25Okapi  # noqa: PLC0415
+        except ImportError as exc:
+            raise QdrantStoreError(
+                "rank-bm25 is not installed. Install with: pip install -r requirements-rag.txt"
+            ) from exc
+
+        query_tokens = _tokenize(query)
+        if not query_tokens or top_k <= 0:
+            return []
+
+        request_started = perf_counter()
+        client = self._get_client()
+        today = datetime.now(UTC).date()
+
+        if index_version:
+            collection_name = self.versioned_name(index_version)
+        else:
+            aliases = client.get_aliases().aliases
+            collection_name = next(
+                (
+                    alias.collection_name
+                    for alias in aliases
+                    if alias.alias_name == self.alias_name()
+                ),
+                None,
+            )
+            if collection_name is None:
+                raise QdrantStoreError(f"Qdrant alias {self.alias_name()!r} is not configured")
+
+        cache_key = (
+            self.url,
+            self.collection,
+            collection_name,
+            _cache_scope_value(audience),
+            _cache_scope_value(area),
+            today,
+        )
+
+        with _bm25_cache_lock:
+            cached_index = _bm25_cache.get(cache_key)
+            if cached_index is not None:
+                _bm25_cache.move_to_end(cache_key)
+
+        cache_hit = cached_index is not None
+        index_build_ms = 0.0
+        document_count = 0
+
+        # Build the BM25 index only when the process-local cache misses.
+        if cached_index is None:
+            build_started = perf_counter()
+
+            query_filter = _retrieval_filter(audience, area, today=today)
+            points = []
+            offset = None
+
+            while True:
+                page, offset = client.scroll(
+                    collection_name=collection_name,
+                    scroll_filter=query_filter,
+                    limit=256,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                points.extend(page)
+
+                if offset is None:
+                    break
+
+            documents = [point.payload or {} for point in points]
+            tokenized_documents = [_tokenize(str(payload.get("text", ""))) for payload in documents]
+            bm25 = BM25Okapi(tokenized_documents) if any(tokenized_documents) else None
+
+            cached_index = (documents, tokenized_documents, bm25)
+
+            # Preserve the existing bounded, process-local LRU cache.
+            with _bm25_cache_lock:
+                _bm25_cache[cache_key] = cached_index
+                _bm25_cache.move_to_end(cache_key)
+
+                while len(_bm25_cache) > _BM25_CACHE_MAXSIZE:
+                    _bm25_cache.popitem(last=False)
+
+            index_build_ms = round(
+                (perf_counter() - build_started) * 1000,
+                2,
+            )
+            document_count = len(documents)
+
+        documents, tokenized_documents, bm25 = cached_index
+        document_count = document_count or len(documents)
+
+        if bm25 is None:
+            log.info(
+                "rag bm25 search completed with empty index",
+                extra={
+                    "event": "rag_bm25_timing",
+                    "cache_hit": cache_hit,
+                    "collection": collection_name,
+                    "audience": audience,
+                    "area": area,
+                    "document_count": document_count,
+                    "index_build_ms": index_build_ms,
+                    "bm25_search_ms": 0.0,
+                    "result_count": 0,
+                    "total_ms": round(
+                        (perf_counter() - request_started) * 1000,
+                        2,
+                    ),
+                },
+            )
+            return []
+
+        # BM25 scoring and deterministic ranking.
+        search_started = perf_counter()
+
+        scores = bm25.get_scores(query_tokens)
+        query_terms = set(query_tokens)
+
+        ranked_indexes = sorted(
+            (
+                index
+                for index, tokens in enumerate(tokenized_documents)
+                if query_terms.intersection(tokens)
+            ),
+            key=lambda index: (
+                -float(scores[index]),
+                str(documents[index].get("chunk_id", "")),
+            ),
+        )
+
+        results = [
+            RetrievedChunk(
+                chunk_id=str(documents[index].get("chunk_id", "")),
+                section_id=str(documents[index].get("section_id", "")),
+                section_path=str(documents[index].get("section_path", "")),
+                text=str(documents[index].get("text", "")),
+                score=float(scores[index]),
+            )
+            for index in ranked_indexes[:top_k]
+        ]
+
+        bm25_search_ms = round(
+            (perf_counter() - search_started) * 1000,
+            2,
+        )
+        total_ms = round(
+            (perf_counter() - request_started) * 1000,
+            2,
+        )
+
+        log.info(
+            "rag bm25 search completed",
+            extra={
+                "event": "rag_bm25_timing",
+                "cache_hit": cache_hit,
+                "collection": collection_name,
+                "audience": audience,
+                "area": area,
+                "document_count": document_count,
+                "index_build_ms": index_build_ms,
+                "bm25_search_ms": bm25_search_ms,
+                "result_count": len(results),
+                "total_ms": total_ms,
+            },
+        )
+
+        return results
+
+
 # Helpers
+
 
 def _point_id(chunk_id: str) -> str:
     """Deterministic UUID-shaped id from a chunk_id."""
@@ -324,9 +699,9 @@ def _point_id(chunk_id: str) -> str:
 def _payload(chunk: Chunk) -> dict[str, Any]:
     """Payload stored alongside each vector.
 
-    Flat by design. Retrieval in Batch 2C filters on ``audience`` and
-    optionally ``area``; ``text`` is carried in the payload so the
-    retrieval layer can feed it to the LLM without a second lookup.
+    Flat by design. Both retrieval modes filter on ``audience``, ``area``,
+    and current policy dates; ``text`` lets the retrieval layer return
+    content without a second lookup.
     """
     m = chunk.metadata
     return {

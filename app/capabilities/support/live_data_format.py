@@ -1,20 +1,42 @@
-"""Format live-data payloads into compact text for the LLM.
+"""Serialize allowlisted live-data fields for grounded answer generation.
 
 Hard rules:
-  * At most 5 items per list. Never the full set.
+  * At most 20 items per list; a smaller user-requested limit takes priority.
   * Truncate strings to prevent prompt bloat.
   * Never include raw JSON with internal fields (bank accounts, PANs,
     phone numbers). Only user-facing fields the LLM needs to answer.
 """
+
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any
 
 from app.capabilities.support.live_data_classifier import LiveDataIntent
+from app.capabilities.support.schemas import (
+    DEFAULT_SUPPORT_LIST_ITEMS,
+    MAX_SUPPORT_LIST_ITEMS,
+)
 
-_MAX_ITEMS = 5
+_MAX_ITEMS = MAX_SUPPORT_LIST_ITEMS
 _MAX_STR = 120
+
+_LIST_FIELDS = {
+    LiveDataIntent.MY_BOOKINGS: "bookings",
+    LiveDataIntent.MY_PAYMENTS: "payments",
+    LiveDataIntent.MY_COIN_HISTORY: "transactions",
+    LiveDataIntent.MY_ENQUIRIES: "enquiries",
+    LiveDataIntent.MY_ENQUIRY_BIDS: "bids",
+    LiveDataIntent.VENDOR_TRANSACTIONS: "transactions",
+    LiveDataIntent.VENDOR_WITHDRAWALS: "withdrawals",
+    LiveDataIntent.VENDOR_INQUIRIES: "inquiries",
+    LiveDataIntent.VENDOR_BOOKINGS: "bookings",
+    LiveDataIntent.VENDOR_BIDS: "bids",
+    LiveDataIntent.PACKAGE_SEARCH: "packages",
+    LiveDataIntent.ACTIVITY_SEARCH: "activities",
+    LiveDataIntent.POPULAR_DESTINATIONS: "destinations",
+}
 
 
 def _s(value: Any, max_len: int = _MAX_STR) -> str:
@@ -30,9 +52,7 @@ def _date(value: Any) -> str:
     if not value:
         return "—"
     try:
-        return datetime.fromisoformat(
-            str(value).replace("Z", "+00:00")
-        ).strftime("%d %b %Y")
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).strftime("%d %b %Y")
     except ValueError:
         return str(value)[:10]
 
@@ -57,7 +77,23 @@ def _money(amount: Any, currency: str | None = None) -> str:
     return f"{sign}{numeric}"
 
 
+def _package_duration(package: dict[str, Any]) -> str:
+    days = package.get("numberOfDays")
+    if isinstance(days, (int, float)) and not isinstance(days, bool):
+        if days > 0 and float(days).is_integer():
+            return f"{int(days)} Days"
+        return "Duration unavailable"
+
+    duration = package.get("duration")
+    if not isinstance(duration, str) or not duration.strip():
+        return "Duration unavailable"
+    if re.search(r"(?<!\w)-\s*\d+(?:\.\d+)?\s*days?\b", duration, re.I):
+        return "Duration unavailable"
+    return _s(duration)
+
+
 # Per-intent formatters
+
 
 def _fmt_my_bookings(payload: dict[str, Any]) -> str:
     bookings = payload.get("bookings", [])[:_MAX_ITEMS]
@@ -71,7 +107,7 @@ def _fmt_my_bookings(payload: dict[str, Any]) -> str:
             (b.get("package") or {}).get("name")
             or (b.get("metadata") or {}).get("destination")
             or (b.get("metadata") or {}).get("enquiryTitle")
-            or (b.get("bookingType") or "").capitalize()   # "package" / "vehicle"
+            or (b.get("bookingType") or "").capitalize()  # "package" / "vehicle"
             or "—"
         )
         lines.append(
@@ -82,6 +118,7 @@ def _fmt_my_bookings(payload: dict[str, Any]) -> str:
             f"payment={_s(b.get('paymentStatus'))}"
         )
     return "\n".join(lines)
+
 
 def _fmt_my_booking_detail(payload: dict[str, Any]) -> str:
     booking = payload.get("booking")
@@ -100,11 +137,7 @@ def _fmt_my_booking_detail(payload: dict[str, Any]) -> str:
     if not isinstance(payment, dict):
         payment = {}
 
-    destination = (
-        package.get("name")
-        or metadata.get("destination")
-        or metadata.get("enquiryTitle")
-    )
+    destination = package.get("name") or metadata.get("destination") or metadata.get("enquiryTitle")
     payment_status = booking.get("paymentStatus") or payment.get("status")
     currency = booking.get("currency") or payment.get("currency") or "INR"
     amount = booking.get("amount")
@@ -124,6 +157,7 @@ def _fmt_my_booking_detail(payload: dict[str, Any]) -> str:
     ]
 
     return "\n".join(lines)
+
 
 def _fmt_my_payments(payload: dict[str, Any]) -> str:
     payments = payload.get("payments", [])[:_MAX_ITEMS]
@@ -179,7 +213,7 @@ def _fmt_my_enquiries(payload: dict[str, Any]) -> str:
     lines = [f"YOUR ENQUIRIES (most recent {len(enquiries)} of {total}):"]
     for e in enquiries:
         lines.append(
-            f"- \"{_s(e.get('title'))}\" | {_s(e.get('destination'))} | "
+            f'- "{_s(e.get("title"))}" | {_s(e.get("destination"))} | '
             f"{_s(e.get('duration'))} | "
             f"{_s(e.get('travelers'), 20)} travellers | "
             f"budget {_money(e.get('budget'), 'INR')} | "
@@ -187,6 +221,7 @@ def _fmt_my_enquiries(payload: dict[str, Any]) -> str:
             f"bids={_s(e.get('bidCount'), 5)}"
         )
     return "\n".join(lines)
+
 
 def _fmt_my_enquiry_bids(payload: dict[str, Any]) -> str:
     enquiry = payload.get("enquiry")
@@ -197,24 +232,13 @@ def _fmt_my_enquiry_bids(payload: dict[str, Any]) -> str:
     total = payload.get("total", len(bids))
     if not bids:
         if isinstance(enquiry, dict):
-            title = (
-                enquiry.get("title")
-                or enquiry.get("destination")
-                or "your most recent enquiry"
-            )
+            title = enquiry.get("title") or enquiry.get("destination") or "your most recent enquiry"
             return f"No bids have been received on {_s(title)} yet."
         return "No bids have been received on this enquiry yet."
 
     if isinstance(enquiry, dict):
-        title = (
-            enquiry.get("title")
-            or enquiry.get("destination")
-            or "your most recent enquiry"
-        )
-        header = (
-            f"BIDS ON YOUR MOST RECENT ENQUIRY ({_s(title)}; "
-            f"showing {len(bids)} of {total}):"
-        )
+        title = enquiry.get("title") or enquiry.get("destination") or "your most recent enquiry"
+        header = f"BIDS ON YOUR MOST RECENT ENQUIRY ({_s(title)}; showing {len(bids)} of {total}):"
     else:
         header = f"BIDS ON YOUR ENQUIRY (most recent {len(bids)} of {total}):"
     lines = [header]
@@ -313,9 +337,7 @@ def _fmt_vendor_bookings(payload: dict[str, Any]) -> str:
     total = payload.get("total", len(bookings))
     if not bookings:
         return "You have no vendor bookings."
-    lines = [
-        f"YOUR VENDOR BOOKINGS (most recent {len(bookings)} of {total}):"
-    ]
+    lines = [f"YOUR VENDOR BOOKINGS (most recent {len(bookings)} of {total}):"]
     for b in bookings:
         destination = (
             (b.get("metadata") or {}).get("destination")
@@ -348,7 +370,7 @@ def _fmt_vendor_bids(payload: dict[str, Any]) -> str:
         enq = b.get("enquiry") or {}
         lines.append(
             f"- {_money(b.get('amount'), 'INR')} on "
-            f"\"{_s(enq.get('title'))}\" "
+            f'"{_s(enq.get("title"))}" '
             f"({_s(enq.get('destination'))}) | "
             f"status={_s(b.get('status'))} | "
             f"negotiation={_s(b.get('negotiationStatus'))} | "
@@ -361,11 +383,7 @@ def _fmt_vendor_subscription(payload: Any) -> str:
     if not payload:
         return "You have no active subscription plan."
     if isinstance(payload, dict):
-        plan = (
-            payload.get("plan")
-            or payload.get("planName")
-            or "unknown plan"
-        )
+        plan = payload.get("plan") or payload.get("planName") or "unknown plan"
         status = payload.get("status", "—")
         expires = payload.get("expiresAt") or payload.get("endDate")
         return (
@@ -381,23 +399,115 @@ def _fmt_package_search(payload: dict[str, Any]) -> str:
     packages = payload.get("packages", [])[:_MAX_ITEMS]
     total = payload.get("total", len(packages))
     if not packages:
-        return "No packages match that search right now."
-    lines = [f"PUBLIC PACKAGES (showing {len(packages)} of {total}):"]
+        return (
+            "I couldn't find any packages in the catalogue for that search. "
+            "Try another destination or ask me to show all packages."
+        )
+
+    shown = len(packages)
+    if total > shown:
+        intro = f"I found {total} packages in the catalogue. Here are {shown} to get you started:"
+    elif total == 1:
+        intro = "I found one package in the catalogue:"
+    else:
+        intro = f"I found {shown} packages in the catalogue:"
+
+    lines = [intro]
     for p in packages:
         agent = p.get("agent") or {}
-        lines.append(
-            f"- {_s(p.get('packageCode'))} | \"{_s(p.get('title'))}\" | "
-            f"{_s(p.get('destination'))} | "
-            f"{_s(p.get('duration'))} | "
-            f"{_money(p.get('price'), p.get('currency') or 'INR')} | "
-            f"by {_s(agent.get('companyName'))}"
-        )
+        title = p.get("title")
+        code = p.get("packageCode")
+        summary = f"- **{_s(title)}**"
+        if code:
+            summary += f" ({_s(code)})"
+
+        details = []
+        if p.get("destination"):
+            details.append(str(p["destination"]).strip())
+        duration = _package_duration(p)
+        if duration != "Duration unavailable":
+            details.append(duration.lower())
+        else:
+            details.append("duration unavailable")
+        if p.get("price") is not None:
+            details.append(_money(p.get("price"), p.get("currency") or "INR"))
+        if agent.get("companyName"):
+            details.append(f"offered by {_s(agent['companyName'])}")
+        if details:
+            summary += " - " + ", ".join(details)
+        else:
+            summary += "."
+        lines.append(summary)
+
+    lines.append("Would you like details about any of these packages?")
     return "\n".join(lines)
+
+
+def _package_matches_location(package: dict[str, Any], query: str) -> bool:
+    normalized_query = re.sub(r"[^a-z0-9]+", " ", query.casefold()).strip()
+    if not normalized_query:
+        return True
+
+    location_aliases = {
+        "uttarakhand": {
+            "uttarakhand",
+            "uttaranchal",
+            "uttrakhand",
+            "rishikesh",
+            "haridwar",
+            "dehradun",
+            "mussoorie",
+            "nainital",
+            "auli",
+            "kedarnath",
+            "badrinath",
+            "jim corbett",
+            "corbett",
+            "almora",
+            "uttarkashi",
+            "chamoli",
+            "tehri",
+            "pithoragarh",
+        }
+    }
+    accepted_locations = location_aliases.get(normalized_query, {normalized_query})
+    searchable_values = (
+        package.get(field)
+        for field in ("title", "destination", "location", "city", "state", "region", "name")
+    )
+    for value in searchable_values:
+        if not isinstance(value, str):
+            continue
+        normalized_value = re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+        if any(
+            re.search(rf"(?<!\w){re.escape(location)}(?!\w)", normalized_value)
+            for location in accepted_locations
+        ):
+            return True
+    return False
+
+
+def filter_package_payload_by_location(
+    payload: dict[str, Any],
+    query: str,
+) -> dict[str, Any]:
+    packages = payload.get("packages")
+    if not isinstance(packages, list):
+        return {**payload, "packages": [], "total": 0}
+    matching = [
+        package
+        for package in packages
+        if isinstance(package, dict) and _package_matches_location(package, query)
+    ]
+    return {**payload, "packages": matching, "total": len(matching)}
 
 
 def _fmt_package_detail(payload: dict[str, Any]) -> str:
     p = payload.get("package") or {}
     if not p:
+        not_found_code = payload.get("not_found_code")
+        if not_found_code:
+            return f"No package with code {_s(not_found_code)} was found in the public catalogue."
         return "The package endpoint returned no details."
     agent = p.get("agent") or {}
     inclusions = p.get("inclusions") or []
@@ -408,13 +518,11 @@ def _fmt_package_detail(payload: dict[str, Any]) -> str:
         f"- Code: {_s(p.get('packageCode'))}",
         f"- Title: {_s(p.get('title'))}",
         f"- Destination: {_s(p.get('destination'))}",
-        f"- Duration: {_s(p.get('duration'))} "
-        f"({_s(p.get('numberOfDays'), 5)} days)",
+        f"- Duration: {_package_duration(p)}",
         f"- Price: {_money(p.get('price'), p.get('currency') or 'INR')} "
         f"(base {_money(p.get('basePrice'), p.get('currency') or 'INR')}, "
         f"savings {_s(p.get('savingsPercent'), 5)}%)",
-        f"- Provider: {_s(agent.get('companyName'))} "
-        f"(verified={bool(agent.get('isVerified'))})",
+        f"- Provider: {_s(agent.get('companyName'))} (verified={bool(agent.get('isVerified'))})",
         f"- Escrow safe: {bool(p.get('isEscrowSafe'))}",
     ]
     if p.get("description"):
@@ -422,10 +530,8 @@ def _fmt_package_detail(payload: dict[str, Any]) -> str:
     if inclusions:
         lines.append(f"- Inclusions: {_s(', '.join(map(str, inclusions)))}")
     if activities:
-        names = [
-            _s(a.get("name")) for a in activities if isinstance(a, dict)
-        ]
-        names = [n for n in names if n and n != "-"]     # drop blank names
+        names = [_s(a.get("name")) for a in activities if isinstance(a, dict)]
+        names = [n for n in names if n and n != "-"]  # drop blank names
         if names:
             lines.append(f"- Activities: {_s(', '.join(names))}")
     return "\n".join(lines)
@@ -434,27 +540,23 @@ def _fmt_package_detail(payload: dict[str, Any]) -> str:
 def _fmt_activity_search(payload: dict[str, Any]) -> str:
     raw_activities = payload.get("activities", [])
     activities = [
-        activity for activity in raw_activities
+        activity
+        for activity in raw_activities
         if isinstance(activity, dict)
         and str(activity.get("name") or activity.get("title") or "").strip()
-    ][: _MAX_ITEMS]
+    ][:_MAX_ITEMS]
     total = payload.get("total", len(raw_activities))
     if not activities and not raw_activities:
         return "No activities match that search right now."
     if not activities:
         return (
-            "The activities service returned entries without usable names. "
-            "Please try again later."
+            "The activities service returned entries without usable names. Please try again later."
         )
-    lines = [
-        f"PUBLIC ACTIVITIES (showing {len(activities)} usable of {total}):"
-    ]
+    lines = [f"PUBLIC ACTIVITIES (showing {len(activities)} usable of {total}):"]
     for a in activities:
-        location = ", ".join(
-            x for x in [a.get("state"), a.get("country")] if x
-        ) or "—"
+        location = ", ".join(x for x in [a.get("state"), a.get("country")] if x) or "—"
         lines.append(
-            f"- \"{_s(a.get('name') or a.get('title'))}\" | "
+            f'- "{_s(a.get("name") or a.get("title"))}" | '
             f"{_s(a.get('category'))} | "
             f"{_s(location)} | "
             f"{_money(a.get('price'), a.get('currency') or 'INR')} | "
@@ -470,9 +572,7 @@ def _fmt_popular_destinations(payload: dict[str, Any]) -> str:
     lines = ["POPULAR DESTINATIONS (by enquiries):"]
     for d in dests:
         avg = d.get("avg_budget")
-        avg_str = (
-            _money(avg, "INR") if avg not in (None, "") else "—"
-        )
+        avg_str = _money(avg, "INR") if avg not in (None, "") else "—"
         lines.append(
             f"- {_s(d.get('destination'))} | "
             f"{_s(d.get('total_enquiries'), 10)} enquiries | "
@@ -505,8 +605,27 @@ _FORMATTERS = {
 }
 
 
-def format_for_intent(intent: LiveDataIntent, payload: dict[str, Any]) -> str:
+def format_for_intent(
+    intent: LiveDataIntent,
+    payload: Any,
+    *,
+    limit: int | None = None,
+    search_query: str | None = None,
+) -> str:
     fmt = _FORMATTERS.get(intent)
     if fmt is None:
         return "Live data available but not formatted."
+    if (
+        intent == LiveDataIntent.PACKAGE_SEARCH
+        and search_query
+        and isinstance(payload, dict)
+    ):
+        payload = filter_package_payload_by_location(payload, search_query)
+    if limit is None:
+        limit = DEFAULT_SUPPORT_LIST_ITEMS
+    limit = max(1, min(int(limit), MAX_SUPPORT_LIST_ITEMS))
+
+    field = _LIST_FIELDS.get(intent)
+    if field and isinstance(payload, dict) and isinstance(payload.get(field), list):
+        payload = {**payload, field: payload[field][:limit]}
     return fmt(payload)

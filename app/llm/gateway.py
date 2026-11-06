@@ -7,6 +7,7 @@ from typing import TypeVar
 
 from pydantic import BaseModel, ValidationError
 
+from app.core.config import settings
 from app.core.exceptions import AIProviderError, AIValidationError
 from app.core.logging import get_logger
 from app.llm.groq import GroqProvider
@@ -16,6 +17,26 @@ from app.observability.logging import log_llm_call
 log = get_logger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
+_MAX_STRUCTURED_COMPLETION_TOKENS = 4096
+_MAX_STRUCTURED_ATTEMPTS = 5
+
+
+def _increase_completion_budget(kwargs: dict[str, object]) -> dict[str, object]:
+    retry_kwargs = dict(kwargs)
+    budget_key = (
+        "max_completion_tokens" if "max_completion_tokens" in retry_kwargs else "max_tokens"
+    )
+    try:
+        current = int(retry_kwargs.get(budget_key, settings.llm_max_tokens))
+    except (TypeError, ValueError):
+        current = settings.llm_max_tokens
+    if current >= _MAX_STRUCTURED_COMPLETION_TOKENS:
+        return retry_kwargs
+    retry_kwargs[budget_key] = min(
+        max(current * 2, current + 512),
+        _MAX_STRUCTURED_COMPLETION_TOKENS,
+    )
+    return retry_kwargs
 
 
 class LLMGateway:
@@ -61,7 +82,8 @@ class LLMGateway:
     ) -> T:
         """Ask the LLM for JSON and validate it against a Pydantic model.
 
-        Retries once if the JSON does not validate.
+        Retries invalid JSON once, and increases the completion budget when
+        the provider reports that the output was truncated.
         """
         schema = json.dumps(response_model.model_json_schema(), indent=2)
         structured_prompt = (
@@ -72,16 +94,35 @@ class LLMGateway:
         )
 
         last_error: Exception | None = None
-        for attempt in range(2):
+        request_kwargs = dict(kwargs)
+        for attempt in range(_MAX_STRUCTURED_ATTEMPTS):
             response = await self.generate(
                 structured_prompt,
                 json_mode=True,
-                **kwargs,
+                **request_kwargs,
             )
             try:
                 return response_model.model_validate_json(response.content)
             except ValidationError as exc:
                 last_error = exc
+                if response.metadata.get("finish_reason") == "length":
+                    retry_kwargs = _increase_completion_budget(request_kwargs)
+                    if retry_kwargs == request_kwargs:
+                        log.warning(
+                            "Structured output remained truncated at the maximum completion budget"
+                        )
+                        break
+                    request_kwargs = retry_kwargs
+                    log.info(
+                        "Retrying truncated structured output with max_tokens=%s",
+                        request_kwargs.get(
+                            "max_completion_tokens",
+                            request_kwargs.get("max_tokens"),
+                        ),
+                    )
+                    continue
+                if attempt > 0:
+                    break
                 log.warning(
                     "Structured output validation failed (attempt %d): %s",
                     attempt + 1,
@@ -97,8 +138,7 @@ class LLMGateway:
     ) -> T:
         """Synchronous mirror of ``generate_structured``.
 
-        Same prompt augmentation, same single retry on validation
-        failure, same exception type. Uses ``generate_sync`` under the
+        Same prompt augmentation and retry policy. Uses ``generate_sync`` under the
         hood so a sync call chain (Chat Safety, Enquiry) can request
         validated JSON without converting to async.
         """
@@ -111,16 +151,35 @@ class LLMGateway:
         )
 
         last_error: Exception | None = None
-        for attempt in range(2):
+        request_kwargs = dict(kwargs)
+        for attempt in range(_MAX_STRUCTURED_ATTEMPTS):
             response = self.generate_sync(
                 structured_prompt,
                 json_mode=True,
-                **kwargs,
+                **request_kwargs,
             )
             try:
                 return response_model.model_validate_json(response.content)
             except ValidationError as exc:
                 last_error = exc
+                if response.metadata.get("finish_reason") == "length":
+                    retry_kwargs = _increase_completion_budget(request_kwargs)
+                    if retry_kwargs == request_kwargs:
+                        log.warning(
+                            "Structured output remained truncated at the maximum completion budget"
+                        )
+                        break
+                    request_kwargs = retry_kwargs
+                    log.info(
+                        "Retrying truncated structured output with max_tokens=%s",
+                        request_kwargs.get(
+                            "max_completion_tokens",
+                            request_kwargs.get("max_tokens"),
+                        ),
+                    )
+                    continue
+                if attempt > 0:
+                    break
                 log.warning(
                     "Structured output validation failed (attempt %d): %s",
                     attempt + 1,
