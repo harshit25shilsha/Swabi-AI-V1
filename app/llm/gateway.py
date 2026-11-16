@@ -7,7 +7,8 @@ from typing import TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from app.core.exceptions import AIValidationError
+from app.core.config import settings
+from app.core.exceptions import AIProviderError, AIValidationError
 from app.core.logging import get_logger
 from app.llm.groq import GroqProvider
 from app.llm.schemas import LLMResponse
@@ -16,6 +17,26 @@ from app.observability.logging import log_llm_call
 log = get_logger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
+_MAX_STRUCTURED_COMPLETION_TOKENS = 4096
+_MAX_STRUCTURED_ATTEMPTS = 5
+
+
+def _increase_completion_budget(kwargs: dict[str, object]) -> dict[str, object]:
+    retry_kwargs = dict(kwargs)
+    budget_key = (
+        "max_completion_tokens" if "max_completion_tokens" in retry_kwargs else "max_tokens"
+    )
+    try:
+        current = int(retry_kwargs.get(budget_key, settings.llm_max_tokens))
+    except (TypeError, ValueError):
+        current = settings.llm_max_tokens
+    if current >= _MAX_STRUCTURED_COMPLETION_TOKENS:
+        return retry_kwargs
+    retry_kwargs[budget_key] = min(
+        max(current * 2, current + 512),
+        _MAX_STRUCTURED_COMPLETION_TOKENS,
+    )
+    return retry_kwargs
 
 
 class LLMGateway:
@@ -33,6 +54,26 @@ class LLMGateway:
         )
         return response
 
+    def generate_sync(self, prompt: str, **kwargs: object) -> LLMResponse:
+        """Synchronous sibling of ``generate``.
+
+        Delegates to the provider's ``generate_sync`` if present, and
+        raises a clear error otherwise. Added for sync callers
+        (Chat Safety) that route through the shared gateway without
+        converting to async.
+        """
+
+        provider_sync = getattr(self.provider, "generate_sync", None)
+        if provider_sync is None:
+            raise AIProviderError(f"provider {type(self.provider).__name__} has no generate_sync")
+        response = provider_sync(prompt, **kwargs)
+        log_llm_call(
+            model=response.model,
+            latency_ms=response.latency_ms,
+            usage=response.usage.model_dump(),
+        )
+        return response
+
     async def generate_structured(
         self,
         prompt: str,
@@ -41,7 +82,8 @@ class LLMGateway:
     ) -> T:
         """Ask the LLM for JSON and validate it against a Pydantic model.
 
-        Retries once if the JSON does not validate.
+        Retries invalid JSON once, and increases the completion budget when
+        the provider reports that the output was truncated.
         """
         schema = json.dumps(response_model.model_json_schema(), indent=2)
         structured_prompt = (
@@ -52,16 +94,92 @@ class LLMGateway:
         )
 
         last_error: Exception | None = None
-        for attempt in range(2):
+        request_kwargs = dict(kwargs)
+        for attempt in range(_MAX_STRUCTURED_ATTEMPTS):
             response = await self.generate(
                 structured_prompt,
                 json_mode=True,
-                **kwargs,
+                **request_kwargs,
             )
             try:
                 return response_model.model_validate_json(response.content)
             except ValidationError as exc:
                 last_error = exc
+                if response.metadata.get("finish_reason") == "length":
+                    retry_kwargs = _increase_completion_budget(request_kwargs)
+                    if retry_kwargs == request_kwargs:
+                        log.warning(
+                            "Structured output remained truncated at the maximum completion budget"
+                        )
+                        break
+                    request_kwargs = retry_kwargs
+                    log.info(
+                        "Retrying truncated structured output with max_tokens=%s",
+                        request_kwargs.get(
+                            "max_completion_tokens",
+                            request_kwargs.get("max_tokens"),
+                        ),
+                    )
+                    continue
+                if attempt > 0:
+                    break
+                log.warning(
+                    "Structured output validation failed (attempt %d): %s",
+                    attempt + 1,
+                    exc,
+                )
+        raise AIValidationError(f"LLM did not return valid structured output: {last_error}")
+
+    def generate_structured_sync(
+        self,
+        prompt: str,
+        response_model: type[T],
+        **kwargs: object,
+    ) -> T:
+        """Synchronous mirror of ``generate_structured``.
+
+        Same prompt augmentation and retry policy. Uses ``generate_sync`` under the
+        hood so a sync call chain (Chat Safety, Enquiry) can request
+        validated JSON without converting to async.
+        """
+        schema = json.dumps(response_model.model_json_schema(), indent=2)
+        structured_prompt = (
+            f"{prompt}\n\n"
+            "Respond ONLY with valid JSON that matches this JSON schema. "
+            "Do not include markdown fences or commentary.\n\n"
+            f"JSON schema:\n{schema}"
+        )
+
+        last_error: Exception | None = None
+        request_kwargs = dict(kwargs)
+        for attempt in range(_MAX_STRUCTURED_ATTEMPTS):
+            response = self.generate_sync(
+                structured_prompt,
+                json_mode=True,
+                **request_kwargs,
+            )
+            try:
+                return response_model.model_validate_json(response.content)
+            except ValidationError as exc:
+                last_error = exc
+                if response.metadata.get("finish_reason") == "length":
+                    retry_kwargs = _increase_completion_budget(request_kwargs)
+                    if retry_kwargs == request_kwargs:
+                        log.warning(
+                            "Structured output remained truncated at the maximum completion budget"
+                        )
+                        break
+                    request_kwargs = retry_kwargs
+                    log.info(
+                        "Retrying truncated structured output with max_tokens=%s",
+                        request_kwargs.get(
+                            "max_completion_tokens",
+                            request_kwargs.get("max_tokens"),
+                        ),
+                    )
+                    continue
+                if attempt > 0:
+                    break
                 log.warning(
                     "Structured output validation failed (attempt %d): %s",
                     attempt + 1,
