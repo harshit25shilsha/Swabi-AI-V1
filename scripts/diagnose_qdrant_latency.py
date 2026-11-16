@@ -1,13 +1,15 @@
 
 import os
+import math
 import socket
 import ssl
+import statistics
 import sys
+from qdrant_client import QdrantClient
 from importlib.metadata import version
 from pathlib import Path
 from time import perf_counter
 from urllib.parse import urlparse
-
 import httpx
 import qdrant_client
 
@@ -24,7 +26,6 @@ from app.rag.qdrant_store import QdrantStore, _retrieval_filter  # noqa: E402
 QUERY = "what is the cancellation policy in this platform?"
 AUDIENCE = "customer"
 TOP_K = 20
-INDEX_VERSION = "a441a35b9643"
 
 
 def test_connection_phases(url: str) -> None:
@@ -389,6 +390,117 @@ def test_sdk_operations(
             f"result_count={len(response.points)}"
         )
 
+def benchmark_rest_vs_grpc(
+    *,
+    collection: str,
+    vector: list[float],
+    query_filter,
+) -> None:
+    """Compare REST and gRPC using identical Qdrant queries."""
+
+    print("\n--- REST VS gRPC BENCHMARK ---")
+
+    common_config = {
+        "url": settings.qdrant_url,
+        "api_key": settings.qdrant_api_key or None,
+        "timeout": settings.qdrant_timeout,
+    }
+
+    rest_client = QdrantClient(
+        **common_config,
+        prefer_grpc=False,
+    )
+
+    grpc_client = QdrantClient(
+        **common_config,
+        prefer_grpc=True,
+        grpc_port=6334,
+    )
+
+    clients = {
+        "REST": rest_client,
+        "gRPC": grpc_client,
+    }
+
+    def execute(client):
+        return client.query_points(
+            collection_name=collection,
+            query=vector,
+            limit=TOP_K,
+            query_filter=query_filter,
+            with_payload=True,
+            with_vectors=False,
+        )
+
+    def result_ids(response):
+        return [
+            str(point.payload.get("chunk_id") or point.id)
+            for point in response.points
+        ]
+
+    timings = {"REST": [], "gRPC": []}
+    final_ids = {}
+
+    try:
+        # Warm up both transports and establish reusable connections.
+        print("Warming up both transports...")
+
+        for _ in range(3):
+            for name, client in clients.items():
+                response = execute(client)
+                final_ids[name] = result_ids(response)
+
+        # Alternate execution order to reduce ordering bias.
+        print("Running 20 measured requests per transport...")
+
+        for iteration in range(20):
+            order = (
+                ("REST", "gRPC")
+                if iteration % 2 == 0
+                else ("gRPC", "REST")
+            )
+
+            for name in order:
+                started = perf_counter()
+                response = execute(clients[name])
+                elapsed = (perf_counter() - started) * 1000
+
+                timings[name].append(elapsed)
+                final_ids[name] = result_ids(response)
+
+        def percentile(values, percentile_value):
+            ordered = sorted(values)
+            index = max(
+                0,
+                math.ceil(percentile_value * len(ordered)) - 1,
+            )
+            return ordered[index]
+
+        for name, values in timings.items():
+            print(f"\n{name}:")
+            print(f"  Requests: {len(values)}")
+            print(f"  Median: {statistics.median(values):.2f} ms")
+            print(f"  P95: {percentile(values, 0.95):.2f} ms")
+            print(f"  Min: {min(values):.2f} ms")
+            print(f"  Max: {max(values):.2f} ms")
+
+        rest_ids = final_ids["REST"]
+        grpc_ids = final_ids["gRPC"]
+
+        print("\n--- RESULT EQUIVALENCE ---")
+        print(f"REST result count: {len(rest_ids)}")
+        print(f"gRPC result count: {len(grpc_ids)}")
+        print(f"Ordered chunk IDs identical: {rest_ids == grpc_ids}")
+        print(f"Same chunk ID set: {set(rest_ids) == set(grpc_ids)}")
+
+        if rest_ids != grpc_ids:
+            print("REST IDs:", rest_ids)
+            print("gRPC IDs:", grpc_ids)
+
+    finally:
+        rest_client.close()
+        grpc_client.close()
+
 
 def test_sdk_underlying_httpx(
     client,
@@ -474,7 +586,11 @@ def main() -> None:
     vector = EmbeddingModel().embed_queries([QUERY])[0].tolist()
 
     store = QdrantStore()
-    collection = store.versioned_name(INDEX_VERSION)
+    collection = store.current_versioned_collection()
+    if not collection:
+        raise RuntimeError(
+            f"No active collection found for alias: {store.alias_name()}"
+        )
 
     query_filter = _retrieval_filter(AUDIENCE, None)
 
@@ -565,6 +681,13 @@ def main() -> None:
     # Test 4: Compare SDK operations.
     test_sdk_operations(
         client=client,
+        collection=collection,
+        vector=vector,
+        query_filter=query_filter,
+    )
+
+    # Test 5: Compare REST vs gRPC performance.
+    benchmark_rest_vs_grpc(
         collection=collection,
         vector=vector,
         query_filter=query_filter,

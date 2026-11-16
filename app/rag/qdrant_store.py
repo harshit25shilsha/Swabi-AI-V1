@@ -236,6 +236,8 @@ class QdrantStore:
             "policy_status": rest.PayloadSchemaType.KEYWORD,
             "effective_from": rest.PayloadSchemaType.DATETIME,
             "expires_on": rest.PayloadSchemaType.DATETIME,
+            "audience": rest.PayloadSchemaType.KEYWORD,
+            "area": rest.PayloadSchemaType.KEYWORD,
         }
         for field_name, schema in indexes.items():
             if field_name not in payload_schema:

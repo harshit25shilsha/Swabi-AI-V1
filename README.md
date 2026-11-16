@@ -435,6 +435,13 @@ deployment/configuration/latency checks. The current evaluation reports are
 `grounding-report-phase2.json`; detailed interpretation and commands are in
 [`docs/hybrid_retrieval.md`](docs/hybrid_retrieval.md).
 
+On 2026-11-16, Qdrant Cloud diagnostics traced an HTTP 404 to an outdated,
+hardcoded physical collection name. The diagnostic now resolves the active
+physical collection through the configured Qdrant alias. REST and gRPC returned
+identical ordered retrieval results in the comparison; REST had lower median
+and P95 latency in that run, so serving remains on REST. These latency results
+are specific to that endpoint and run.
+
 ---
 
 ## Authentication
@@ -698,6 +705,10 @@ python scripts/evaluate_retrieval.py --k 5 --rrf-rank-constant 20 --candidate-mu
 # configured LLM provider to judge semantic support.
 python scripts/evaluate_grounding.py
 python scripts/evaluate_grounding.py --judge --output grounding-report.json
+
+# Live Qdrant connectivity and REST-vs-gRPC diagnostic (uses configured
+# Qdrant access and generates a query embedding).
+python scripts/diagnose_qdrant_latency.py
 ```
 
 Retrieval evaluation requires the current knowledge index to be published

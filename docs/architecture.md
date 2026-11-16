@@ -754,8 +754,9 @@ The knowledge path:
    same version. Missing state, Qdrant failure, or mismatch fails closed.
 2. Filters chunks by audience, area, and lifecycle. Policy chunks must be
    approved, effective on the current date, and not expired. Lifecycle
-   status is metadata in the YAML knowledge configuration and Qdrant; there
-   is no AI-PostgreSQL policy registry.
+   status is metadata in the YAML knowledge configuration and Qdrant; Qdrant
+   payload indexes cover the `audience` and `area` filter fields. There is no
+   AI-PostgreSQL policy registry.
 3. Runs dense vector and BM25 keyword search over that eligible version and
    combines rankings with Reciprocal Rank Fusion (RRF).
 4. Sends up to `SUPPORT_MAX_CONTEXT_CHUNKS` chunks (default 5), each limited
@@ -764,6 +765,23 @@ The knowledge path:
 5. Validates answer type and citations against retrieved chunk IDs. Invalid
    IDs are removed; an answer without any valid knowledge citation fails
    closed. Citation output is capped at three.
+
+#### Qdrant Cloud diagnostics
+
+Run `python scripts/diagnose_qdrant_latency.py` to inspect connectivity and
+compare equivalent REST and gRPC queries against the configured Qdrant
+endpoint. It resolves the diagnostic's physical collection from the configured
+alias rather than relying on a version hardcoded in the script. This does not
+replace the serving-time authority check: production retrieval still requires
+`data/rag_index/CURRENT` and the Qdrant alias to identify the same published
+version.
+
+In the 2026-11-16 Qdrant Cloud run, the 404 was traced to an outdated
+hardcoded collection version. REST and gRPC returned identical ordered chunk
+IDs; REST had lower median and P95 latency, so the service continues to use
+REST. These latency observations describe that run and endpoint, not a
+transport guarantee. The diagnostic requires network access and valid
+credentials for the configured Qdrant service, and generates a query embedding.
 
 Structured answers use `SUPPORT_ANSWER_MAX_TOKENS` (default 1,536). The
 Groq response `finish_reason` is retained; when it is `length` and the
