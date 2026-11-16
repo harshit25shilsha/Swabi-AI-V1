@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import hashlib
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Request
 
-from app.capabilities.chat_safety.dependencies import verify_token
+from app.core.route_auth import require_user_capability
 from app.capabilities.chat_safety.prompts import PROMPT_VERSION
 from app.capabilities.chat_safety.schemas import (
     ModerationRequest,
@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api/v1", tags=["chat_safety"])
 @router.post(
     "/validate-message",
     response_model=ModerationResponse,
-    dependencies=[Depends(verify_token)],
+    dependencies=[require_user_capability("ai:chat-safety")],
 )
 def validate_message(payload: ModerationRequest, request: Request) -> ModerationResponse:
     # Sync route: FastAPI runs this in a thread pool. `moderate` is sync.

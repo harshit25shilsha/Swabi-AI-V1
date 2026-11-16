@@ -10,6 +10,9 @@ Precedence (highest first):
 
 from __future__ import annotations
 
+from typing import Literal
+
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -39,6 +42,10 @@ class Settings(BaseSettings):
     groq_chat_url: str = "https://api.groq.com/openai/v1/chat/completions"
     llm_timeout: int = 60
     llm_max_retries: int = 2
+    groq_max_concurrent_requests: int = Field(default=1, ge=1)
+    groq_tpm_limit: int | None = Field(default=None, ge=1)
+    groq_tpm_target_utilization: float = Field(default=0.75, gt=0.0, le=1.0)
+    groq_tpm_window_seconds: int = Field(default=60, ge=1)
 
     llm_temperature: float = 0.0
     llm_max_tokens: int = 512
@@ -67,6 +74,16 @@ class Settings(BaseSettings):
     # Guardrail service (inbound auth for /api/v1/validate-message)
     guardrail_api_token: str  # required
 
+    # Inbound user authentication
+    #
+    # In gateway mode NestJS validates the user JWT and attaches a signed,
+    # short-lived principal assertion for this private service.  The AI
+    # service verifies the assertion but deliberately does not decode the
+    # user JWT.  `legacy_service_token` exists only for the staged migration
+    # from the historical service-token routes.
+    ai_auth_mode: Literal["gateway", "legacy_service_token"] = "gateway"
+    ai_gateway_auth_secret: str = ""
+
     # Feature flags
 
     enable_rag: bool = True
@@ -76,7 +93,7 @@ class Settings(BaseSettings):
     # Upper-case aliases — for guardrail code (GDv1) that reads
     # settings.GROQ_API_KEY etc. Lower-case field names remain canonical.
 
-# RAG — embeddings + Qdrant
+    # RAG — embeddings + Qdrant
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: str = ""
     qdrant_collection: str = "swabi_chunks"
@@ -87,13 +104,26 @@ class Settings(BaseSettings):
     rag_embedding_batch_size: int = 32
 
     # Rag Retrieval + answer
-    rag_top_k : int = 5
+    rag_top_k: int = 5
+    support_max_context_chunks: int = Field(default=5, ge=1)
+    support_max_chunk_chars: int = Field(default=1200, ge=1)
+    support_answer_max_tokens: int = Field(default=1536, ge=512, le=4096)
     rag_min_score: float = 0.45
+    rag_reranker_enabled: bool = False
+    rag_reranker_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
 
     # Swabi backend response encryption (CryptoJS AES)
     # Leave empty if the backend returns plain JSON.
     swabi_response_passphrase: str = ""
     swabi_response_kdf: str = "md5"  # "md5" (CryptoJS default) or "sha256"
+
+    @model_validator(mode="after")
+    def _require_gateway_secret(self) -> "Settings":
+        if self.ai_auth_mode == "gateway" and not self.ai_gateway_auth_secret:
+            raise ValueError(
+                "AI_GATEWAY_AUTH_SECRET is required when AI_AUTH_MODE=gateway"
+            )
+        return self
 
     @property
     def GROQ_API_KEY(self) -> str:

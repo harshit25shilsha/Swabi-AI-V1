@@ -60,7 +60,6 @@ class IngestError(Exception):
     """Deterministic ingestion failure."""
 
 
-
 # Text helpers
 
 
@@ -98,8 +97,8 @@ def _chunk_id(document_id: str, section_id: str, text: str) -> str:
     return digest.hexdigest()[:16]
 
 
-
 # LangChain loading and splitting
+
 
 def _load_langchain_documents(text: str):
     """Split Markdown into heading-scoped LangChain Documents.
@@ -130,9 +129,7 @@ def _split_oversized(text: str, chunk_size_cap: int) -> list[str]:
     try:
         from langchain_text_splitters import RecursiveCharacterTextSplitter
     except ImportError as exc:
-        raise IngestError(
-            "langchain-text-splitters is required for oversized chunks"
-        ) from exc
+        raise IngestError("langchain-text-splitters is required for oversized chunks") from exc
 
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size_cap,
@@ -144,6 +141,7 @@ def _split_oversized(text: str, chunk_size_cap: int) -> list[str]:
 
 
 # Config flattening
+
 
 def _flatten_config(
     cfg: dict[str, Any],
@@ -171,13 +169,12 @@ def _flatten_config(
     return leaves, parents
 
 
-
 # Heading path helpers
+
 
 def _heading_path(document: Any) -> list[str]:
     metadata = document.metadata
-    return [metadata[key] for key in ("h1", "h2", "h3", "h4")
-            if metadata.get(key)]
+    return [metadata[key] for key in ("h1", "h2", "h3", "h4") if metadata.get(key)]
 
 
 def _numbered_path(path: list[str]) -> list[str]:
@@ -231,9 +228,8 @@ def _resolve_leaf(
     # Case A — leaf section.
     if deepest in leaves:
         spec = leaves[deepest]
-        skip_titles = [s.strip().lower()
-                       for s in (spec.get("skip_subsections") or [])]
-        for sub in path[deepest_idx + 1:]:
+        skip_titles = [s.strip().lower() for s in (spec.get("skip_subsections") or [])]
+        for sub in path[deepest_idx + 1 :]:
             if sub.strip().lower() in skip_titles:
                 return deepest, None, f"skip:{sub}"
         return deepest, spec, None
@@ -244,9 +240,7 @@ def _resolve_leaf(
             return deepest, None, "parent_body"
         subheading = path[deepest_idx + 1]
         for child in parents[deepest]:
-            if _subheading_matches(
-                subheading, child.get("includes_subsections") or []
-            ):
+            if _subheading_matches(subheading, child.get("includes_subsections") or []):
                 return child["id"], child, None
         return deepest, None, f"unclaimed:{subheading}"
 
@@ -256,22 +250,20 @@ def _resolve_leaf(
             return sid, leaves[sid], None
         if sid in parents:
             idx = next(
-                (i for i, h in enumerate(path)
-                 if _extract_section_id(h) == sid),
+                (i for i, h in enumerate(path) if _extract_section_id(h) == sid),
                 None,
             )
             if idx is not None and idx + 1 < len(path):
                 subheading = path[idx + 1]
                 for child in parents[sid]:
-                    if _subheading_matches(
-                        subheading, child.get("includes_subsections") or []
-                    ):
+                    if _subheading_matches(subheading, child.get("includes_subsections") or []):
                         return child["id"], child, None
 
     return deepest, None, "no_match"
 
 
 # Merging helpers
+
 
 def _merge_bucket(
     items: list[tuple[list[str], str]],
@@ -293,20 +285,19 @@ def _merge_bucket(
         # Headings below the leaf heading (excluding the leaf itself).
         try:
             leaf_idx = next(
-                i for i, h in enumerate(path)
+                i
+                for i, h in enumerate(path)
                 if _extract_section_id(h) == leaf_heading
-                or _heading_title(h).strip().lower()
-                   == _heading_title(leaf_heading).strip().lower()
+                or _heading_title(h).strip().lower() == _heading_title(leaf_heading).strip().lower()
             )
         except StopIteration:
             leaf_idx = len(path) - 1
 
-        extra = path[leaf_idx + 1:]
+        extra = path[leaf_idx + 1 :]
         if extra:
             # Re-emit as subheadings with their original relative level.
             sub_prefix = "\n\n".join(
-                f"{'#' * (leaf_depth + 1 + i)} {h}"
-                for i, h in enumerate(extra)
+                f"{'#' * (leaf_depth + 1 + i)} {h}" for i, h in enumerate(extra)
             )
             parts.append(f"{sub_prefix}\n\n{content}")
         else:
@@ -314,16 +305,15 @@ def _merge_bucket(
     return "\n\n".join(parts)
 
 
-
 # Gaps + version
+
 
 def _collect_gaps(cfg: dict[str, Any]) -> dict[str, list[str]]:
     gaps: dict[str, list[str]] = {}
 
     def walk(section: dict[str, Any]) -> None:
         if section.get("known_gaps"):
-            gaps[section["id"]] = [str(x).strip()
-                                   for x in section["known_gaps"]]
+            gaps[section["id"]] = [str(x).strip() for x in section["known_gaps"]]
         for child in section.get("split_into") or []:
             walk(child)
 
@@ -354,7 +344,6 @@ def _compute_version(
     return digest.hexdigest()[:12]
 
 
-
 # Pipeline result
 
 
@@ -366,8 +355,8 @@ class IngestResult:
     known_gaps: dict[str, list[str]]
 
 
-
 # Ingestion
+
 
 def ingest(
     config_path: Path,
@@ -377,9 +366,7 @@ def ingest(
     chunk_size_cap: int = 4000,
 ) -> IngestResult:
     if chunk_size_cap <= 0:
-        raise ConfigError(
-            f"chunk_size_cap must be positive, got {chunk_size_cap}"
-        )
+        raise ConfigError(f"chunk_size_cap must be positive, got {chunk_size_cap}")
 
     cfg = load_config(config_path)
     validate_config(cfg, release=release)
@@ -393,9 +380,7 @@ def ingest(
     expected_hash = cfg.get("source_hash_expected")
     if expected_hash and expected_hash != source_hash:
         raise ConfigError(
-            "source hash mismatch\n"
-            f"  expected: {expected_hash}\n"
-            f"  actual:   {source_hash}"
+            f"source hash mismatch\n  expected: {expected_hash}\n  actual:   {source_hash}"
         )
 
     config_hash = sha256_of(config_path.read_text(encoding="utf-8"))
@@ -414,7 +399,6 @@ def ingest(
     over_cap: list[str] = []
     warnings: list[str] = []
 
-
     # Bucket documents by resolved leaf section id.
 
     buckets: dict[str, list[tuple[list[str], str]]] = defaultdict(list)
@@ -431,9 +415,7 @@ def ingest(
         if any(sid in excluded_ids for sid in nums):
             excluded.append(" > ".join(path))
             continue
-        if excluded_titles and any(
-            sub in " ".join(path).lower() for sub in excluded_titles
-        ):
+        if excluded_titles and any(sub in " ".join(path).lower() for sub in excluded_titles):
             excluded.append(" > ".join(path))
             continue
 
@@ -443,21 +425,17 @@ def ingest(
             skipped.append(f"{leaf_id or '?'}: {reason}")
             continue
         if leaf_id is None or spec is None:
-            warnings.append(
-                f"unmapped heading path: {' > '.join(path)}"
-            )
+            warnings.append(f"unmapped heading path: {' > '.join(path)}")
             continue
         lifecycle = spec.get("policy_lifecycle") or {}
         if lifecycle.get("status") == "withdrawn":
             excluded.append(
-                f"{' > '.join(path)}: withdrawn policy "
-                f"{lifecycle.get('policy_id', leaf_id)}"
+                f"{' > '.join(path)}: withdrawn policy {lifecycle.get('policy_id', leaf_id)}"
             )
             continue
 
         buckets[leaf_id].append((path, document.page_content))
         bucket_path.setdefault(leaf_id, path)
-
 
     # One chunk per leaf; split only when oversized.
 
@@ -472,9 +450,7 @@ def ingest(
             leaf_depth=leaf_depth,
         )
 
-        heading_prefix = "\n\n".join(
-            f"{'#' * (i + 1)} {h}" for i, h in enumerate(path)
-        )
+        heading_prefix = "\n\n".join(f"{'#' * (i + 1)} {h}" for i, h in enumerate(path))
         text = f"{heading_prefix}\n\n{merged}".rstrip() + "\n"
 
         pieces = _split_oversized(text, chunk_size_cap)
@@ -482,88 +458,72 @@ def ingest(
         flags: list[ReviewFlag] = []
         for index, flag in enumerate(spec.get("review_flags") or []):
             if not isinstance(flag, dict) or not flag.get("text"):
-                raise IngestError(
-                    f"section {leaf_id}: invalid review flag at index {index}"
-                )
+                raise IngestError(f"section {leaf_id}: invalid review flag at index {index}")
             flag_id = flag.get("id") or f"{leaf_id}#{index}"
             if release and not flag.get("id"):
                 raise IngestError(
-                    f"section {leaf_id}: review flag #{index} requires an "
-                    "explicit id for release"
+                    f"section {leaf_id}: review flag #{index} requires an explicit id for release"
                 )
-            flags.append(ReviewFlag(
-                id=str(flag_id),
-                text=flag["text"].strip(),
-                confirmed=flag.get("confirmed", False),
-            ))
+            flags.append(
+                ReviewFlag(
+                    id=str(flag_id),
+                    text=flag["text"].strip(),
+                    confirmed=flag.get("confirmed", False),
+                )
+            )
 
         for piece_index, piece in enumerate(pieces, start=1):
-            chunk_section_id = (
-                leaf_id if len(pieces) == 1
-                else f"{leaf_id}__p{piece_index}"
-            )
+            chunk_section_id = leaf_id if len(pieces) == 1 else f"{leaf_id}__p{piece_index}"
             if len(piece) > chunk_size_cap:
                 over_cap.append(chunk_section_id)
 
-            chunks.append(Chunk(
-                text=piece,
-                metadata=ChunkMetadata(
-                    chunk_id=_chunk_id(document_id, chunk_section_id, piece),
-                    document_id=document_id,
-                    category=spec["category"],
-                    section_id=chunk_section_id,
-                    section_title=spec["title"],
-                    section_path=" > ".join(path),
-                    area=KnowledgeArea(spec["area"]),
-                    audience=Audience(spec["audience"]),
-                    source=cfg["default_source"],
-                    source_version=cfg["source_version"],
-                    last_updated=cfg["last_updated"],
-                    policy_id=(spec.get("policy_lifecycle") or {}).get(
-                        "policy_id"
+            chunks.append(
+                Chunk(
+                    text=piece,
+                    metadata=ChunkMetadata(
+                        chunk_id=_chunk_id(document_id, chunk_section_id, piece),
+                        document_id=document_id,
+                        category=spec["category"],
+                        section_id=chunk_section_id,
+                        section_title=spec["title"],
+                        section_path=" > ".join(path),
+                        area=KnowledgeArea(spec["area"]),
+                        audience=Audience(spec["audience"]),
+                        source=cfg["default_source"],
+                        source_version=cfg["source_version"],
+                        last_updated=cfg["last_updated"],
+                        policy_id=(spec.get("policy_lifecycle") or {}).get("policy_id"),
+                        policy_status=(
+                            (spec.get("policy_lifecycle") or {}).get("status")
+                            or (
+                                "not_applicable"
+                                if spec["category"] not in cfg["policy_categories"]
+                                else "unclassified"
+                            )
+                        ),
+                        effective_from=(spec.get("policy_lifecycle") or {}).get("effective_from"),
+                        expires_on=(spec.get("policy_lifecycle") or {}).get("expires_on"),
+                        supersedes=(spec.get("policy_lifecycle") or {}).get("supersedes", []),
+                        destination=spec.get("destination"),
+                        activity=spec.get("activity"),
+                        review_flags=flags,
                     ),
-                    policy_status=(
-                        (spec.get("policy_lifecycle") or {}).get("status")
-                        or (
-                            "not_applicable"
-                            if spec["category"] not in cfg["policy_categories"]
-                            else "unclassified"
-                        )
-                    ),
-                    effective_from=(spec.get("policy_lifecycle") or {}).get(
-                        "effective_from"
-                    ),
-                    expires_on=(spec.get("policy_lifecycle") or {}).get(
-                        "expires_on"
-                    ),
-                    supersedes=(spec.get("policy_lifecycle") or {}).get(
-                        "supersedes", []
-                    ),
-                    destination=spec.get("destination"),
-                    activity=spec.get("activity"),
-                    review_flags=flags,
-                ),
-            ))
+                )
+            )
 
     # -------------------------------------------------------------------
     # Coverage: every leaf must have produced at least one chunk.
     # -------------------------------------------------------------------
-    produced_ids = {
-        chunk.metadata.section_id.split("__p")[0] for chunk in chunks
-    }
+    produced_ids = {chunk.metadata.section_id.split("__p")[0] for chunk in chunks}
     missing_leaves = [
-        sid for sid in leaves
+        sid
+        for sid in leaves
         if sid not in produced_ids
         and sid not in excluded_ids
-        and (leaves[sid].get("policy_lifecycle") or {}).get("status")
-        != "withdrawn"
+        and (leaves[sid].get("policy_lifecycle") or {}).get("status") != "withdrawn"
     ]
     if missing_leaves:
-        raise IngestError(
-            "config leaves not covered by any chunk: "
-            f"{sorted(missing_leaves)}"
-        )
-
+        raise IngestError(f"config leaves not covered by any chunk: {sorted(missing_leaves)}")
 
     # Release checks
 
@@ -571,14 +531,9 @@ def ingest(
     if release:
         unconfirmed = [f.id for f in all_flags if not f.confirmed]
         if unconfirmed:
-            raise IngestError(
-                f"--release blocked by unconfirmed review flags: {unconfirmed}"
-            )
+            raise IngestError(f"--release blocked by unconfirmed review flags: {unconfirmed}")
         if over_cap:
-            raise IngestError(
-                f"--release blocked by {len(over_cap)} over-cap chunks"
-            )
-
+            raise IngestError(f"--release blocked by {len(over_cap)} over-cap chunks")
 
     # Manifest + report
 

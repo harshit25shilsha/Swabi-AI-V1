@@ -103,9 +103,7 @@ class SwabiClient:
                             kdf=settings.swabi_response_kdf,
                         )
                     except SwabiDecryptionError as exc:
-                        raise SwabiAPIError(
-                            f"Swabi decryption failed on {path}: {exc}"
-                        ) from exc
+                        raise SwabiAPIError(f"Swabi decryption failed on {path}: {exc}") from exc
                     try:
                         data = json.loads(plaintext)
                     except json.JSONDecodeError as exc:
@@ -115,8 +113,7 @@ class SwabiClient:
 
                 if not isinstance(data, dict):
                     raise SwabiAPIError(
-                        f"Swabi response is not a dict on {path}: "
-                        f"{type(data).__name__}"
+                        f"Swabi response is not a dict on {path}: {type(data).__name__}"
                     )
                 return data
 

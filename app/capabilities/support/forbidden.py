@@ -11,6 +11,7 @@ Two distinct concerns:
 Both checks are conservative and downgrade the response to
 insufficient_context if they fire. They are tunable.
 """
+
 from __future__ import annotations
 
 import re
@@ -36,6 +37,7 @@ _FINANCIAL_PROMISE_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+
 
 def strip_forbidden_paths(answer: str) -> tuple[str, list[str]]:
     """Redact internal paths. Returns (clean_answer, matched_paths)."""
