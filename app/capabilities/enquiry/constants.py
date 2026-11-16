@@ -28,9 +28,11 @@ class Accommodation(StrEnum):
 
 
 class Transport(StrEnum):
-    """UI transport chips. DTO stores this as a single string."""
+    """Transport values; keep generic private cabs distinct from sedans."""
 
+    PRIVATE_CAB = "Private Cab"
     PRIVATE_CAB_SEDAN = "Private Cab (Sedan)"
+    PRIVATE_TEMPO_TRAVELLER = "Private Tempo Traveller"
     PRIVATE_SUV = "Private SUV"
     TEMPO_TRAVELLER_12 = "Tempo Traveller (12-Seater)"
     LUXURY_SEDAN = "Luxury Sedan"
@@ -74,22 +76,31 @@ KNOWN_ACTIVITIES: tuple[str, ...] = (
 
 
 class PropertyType(StrEnum):
-    """BRD CUST-ENQ-14. Distinct from Accommodation (which is category/rating)."""
+    """BRD CUST-ENQ-14; composite values represent multi-stay enquiries."""
 
     VILLA = "villa"
     APARTMENT = "apartment"
     HOTEL = "hotel"
     HOMESTAY = "homestay"
     RESORT = "resort"
+    HOUSEBOAT = "houseboat"
+    RESORT_AND_HOUSEBOAT = "resort+houseboat"
+    HOTEL_AND_RESORT = "hotel+resort"
+    HOTEL_RESORT_AND_HOUSEBOAT = "hotel+resort+houseboat"
     GUESTHOUSE = "guesthouse"
     OTHER = "other"
 
 
 class TripType(StrEnum):
-    """BRD CUST-ENQ-16."""
+    """Trip intent, including existing BRD values and common travel intents."""
 
     MYSELF = "myself"
     FAMILY = "family"
+    HONEYMOON = "honeymoon"
+    ROMANTIC = "romantic"
+    ADVENTURE = "adventure"
+    BUSINESS = "business"
+    FRIENDS = "friends"
     OTHERS = "others"
 
 
@@ -119,13 +130,24 @@ FIELD_TOUR_GUIDE = "tour_guide"
 FIELD_ACTIVITIES = "activities"
 FIELD_SPECIAL_INSTRUCTIONS = "special_instructions"
 
-# Fields that must be present before the enquiry can be posted.
+# Minimum information needed to understand the trip.
 REQUIRED_FIELDS: tuple[str, ...] = (
     FIELD_DESTINATION,
     FIELD_WHEN,
     FIELD_TRAVELERS,
+)
+
+# Useful planning preferences, but not blockers for creating an enquiry.
+RECOMMENDED_FIELDS: tuple[str, ...] = (
+    FIELD_BUDGET,
     FIELD_ACCOMMODATION,
     FIELD_TRANSPORT,
+    FIELD_DURATION,
+    FIELD_TRAVEL_DATE,
+)
+
+# Preference details that should not be requested unless the user raises them.
+OPTIONAL_FIELDS: tuple[str, ...] = (
     FIELD_MEALS,
     FIELD_TOUR_GUIDE,
     FIELD_ACTIVITIES,
@@ -133,11 +155,7 @@ REQUIRED_FIELDS: tuple[str, ...] = (
     FIELD_DESCRIPTION,
 )
 
-# Fields worth asking about but not blocking.
-ASKABLE_FIELDS: tuple[str, ...] = (
-    FIELD_BUDGET,
-    FIELD_DURATION,
-    FIELD_TRAVEL_DATE,
-)
+# Kept as the existing askable-field grouping for internal callers.
+ASKABLE_FIELDS: tuple[str, ...] = RECOMMENDED_FIELDS
 
 MAX_CLARIFYING_QUESTIONS = 4

@@ -115,7 +115,8 @@ class EnquiryUnderstandResponse(BaseModel):
     missing_fields: list[str] = Field(default_factory=list)
     clarifying_questions: list[ClarificationQuestion] = Field(default_factory=list)
 
-    # 0.0 = nothing extracted, 1.0 = all required fields present.
+    # Required-field coverage, not extraction accuracy: 1.0 means all required
+    # fields are present.
     completeness: float = Field(..., ge=0.0, le=1.0)
 
     # Metadata, same shape as Chat Safety.

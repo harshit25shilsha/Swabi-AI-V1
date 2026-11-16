@@ -17,9 +17,12 @@ from app.capabilities.enquiry.constants import (
     FIELD_TRAVELERS,
     FIELD_WHEN,
     MAX_CLARIFYING_QUESTIONS,
+    OPTIONAL_FIELDS,
+    RECOMMENDED_FIELDS,
     REQUIRED_FIELDS,
 )
 from app.capabilities.enquiry.schemas import (
+    DateFlexibility,
     EnquiryBudget,
     EnquiryExtraction,
     EnquiryRequirements,
@@ -60,13 +63,16 @@ def _full_extraction() -> EnquiryExtraction:
 # ---------------------------------------------------------------------------
 
 
-def test_empty_extraction_flags_all_required_and_askable():
+def test_empty_extraction_flags_required_and_recommended_only():
     missing = detect_missing_fields(EnquiryExtraction())
     for f in REQUIRED_FIELDS:
         assert f in missing, f"expected {f} in missing"
-    assert FIELD_BUDGET in missing
-    assert FIELD_DURATION in missing
-    assert FIELD_TRAVEL_DATE in missing
+    for f in RECOMMENDED_FIELDS:
+        if f == FIELD_TRAVEL_DATE:
+            continue
+        assert f in missing, f"expected {f} in missing"
+    for f in OPTIONAL_FIELDS:
+        assert f not in missing, f"optional field {f} should not be missing"
 
 
 def test_missing_order_starts_with_required():
@@ -149,22 +155,45 @@ def test_requirements_fields_flagged_individually():
         ),
     )
     missing = detect_missing_fields(e)
-    assert FIELD_MEALS in missing
+    assert FIELD_MEALS not in missing
     assert FIELD_TRANSPORT in missing
-    assert FIELD_TOUR_GUIDE in missing
-    assert FIELD_ACTIVITIES in missing
-    assert FIELD_SPECIAL_INSTRUCTIONS in missing
+    assert FIELD_TOUR_GUIDE not in missing
+    assert FIELD_ACTIVITIES not in missing
+    assert FIELD_SPECIAL_INSTRUCTIONS not in missing
     assert FIELD_ACCOMMODATION not in missing
 
 
-def test_empty_description_flagged():
+def test_empty_description_is_optional():
     e = EnquiryExtraction(description="")
-    assert FIELD_DESCRIPTION in detect_missing_fields(e)
+    assert FIELD_DESCRIPTION not in detect_missing_fields(e)
 
 
-def test_empty_special_requests_flagged():
+def test_empty_special_requests_are_optional():
     e = EnquiryExtraction(requirements=EnquiryRequirements(special_requests=""))
-    assert FIELD_SPECIAL_INSTRUCTIONS in detect_missing_fields(e)
+    assert FIELD_SPECIAL_INSTRUCTIONS not in detect_missing_fields(e)
+
+
+def test_broad_date_window_satisfies_when_without_an_exact_date():
+    e = EnquiryExtraction(
+        destination="Kerala",
+        duration_days=6,
+        travelers=2,
+        date_flexibility=DateFlexibility(
+            is_flexible=True,
+            note="last week of December",
+        ),
+    )
+    missing = detect_missing_fields(e)
+    assert FIELD_WHEN not in missing
+    assert FIELD_TRAVEL_DATE not in missing
+    assert FIELD_DURATION not in missing
+
+
+def test_generic_flexibility_note_does_not_replace_a_travel_window():
+    e = EnquiryExtraction(
+        date_flexibility=DateFlexibility(is_flexible=True, note="Dates are flexible"),
+    )
+    assert FIELD_WHEN in detect_missing_fields(e)
 
 
 # ---------------------------------------------------------------------------
@@ -182,14 +211,28 @@ def test_clarifying_questions_for_missing_required():
 
 
 def test_clarifying_questions_capped_at_max():
-    missing = list(REQUIRED_FIELDS) + [FIELD_BUDGET, FIELD_DURATION]
+    missing = list(REQUIRED_FIELDS) + list(RECOMMENDED_FIELDS)
     qs = generate_clarifying_questions(missing)
     assert len(qs) <= MAX_CLARIFYING_QUESTIONS
 
 
-def test_clarifying_questions_skips_unknown_fields():
-    qs = generate_clarifying_questions(["not_a_real_field"])
+def test_clarifying_questions_skips_optional_and_unknown_fields():
+    qs = generate_clarifying_questions(
+        ["not_a_real_field", FIELD_TOUR_GUIDE, FIELD_ACTIVITIES]
+    )
     assert qs == []
+
+
+def test_clarifying_questions_defer_recommendations_until_core_is_complete():
+    qs = generate_clarifying_questions(
+        [FIELD_DESTINATION, FIELD_BUDGET, FIELD_ACCOMMODATION]
+    )
+    assert [question.field for question in qs] == [FIELD_DESTINATION]
+
+
+def test_clarifying_questions_ask_recommendations_when_core_is_complete():
+    qs = generate_clarifying_questions([FIELD_BUDGET, FIELD_ACCOMMODATION])
+    assert [question.field for question in qs] == [FIELD_BUDGET, FIELD_ACCOMMODATION]
 
 
 def test_clarifying_questions_empty_input():
