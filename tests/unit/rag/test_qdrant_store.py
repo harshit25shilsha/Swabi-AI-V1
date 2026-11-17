@@ -138,7 +138,13 @@ def test_ensure_collection_creates_policy_lifecycle_indexes():
     indexed_fields = {
         call.kwargs["field_name"] for call in client.create_payload_index.call_args_list
     }
-    assert indexed_fields == {"policy_status", "effective_from", "expires_on"}
+    assert indexed_fields == {
+        "policy_status",
+        "effective_from",
+        "expires_on",
+        "audience",
+        "area",
+    }
 
 
 # Upsert
@@ -268,6 +274,7 @@ def test_keyword_search_pins_version_without_resolving_alias():
     client.get_aliases.assert_not_called()
     assert client.scroll.call_args.kwargs["collection_name"] == "c_pinned_vversion-1"
 
+
 def test_warm_keyword_index_is_reused_by_live_keyword_search():
     store = QdrantStore(collection="c_warm_reuse")
     client = MagicMock()
@@ -355,7 +362,6 @@ def test_warm_keyword_index_requires_pinned_version():
             area="swabi",
             index_version="",
         )
-
 
 
 def test_dense_search_pins_versioned_collection():

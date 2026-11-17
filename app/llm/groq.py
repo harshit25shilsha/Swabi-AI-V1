@@ -415,19 +415,13 @@ class GroqProvider:
                 _request_semaphore.acquire()
                 acquired = True
 
-                semaphore_wait_ms = (
-                    time.perf_counter() - semaphore_started
-                ) * 1000
+                semaphore_wait_ms = (time.perf_counter() - semaphore_started) * 1000
 
                 tpm_started = time.perf_counter()
 
-                reservation_id = groq_tpm_limiter.wait_for_capacity(
-                    estimated_tokens
-                )
+                reservation_id = groq_tpm_limiter.wait_for_capacity(estimated_tokens)
 
-                tpm_wait_ms = (
-                    time.perf_counter() - tpm_started
-                ) * 1000
+                tpm_wait_ms = (time.perf_counter() - tpm_started) * 1000
 
                 http_started = time.perf_counter()
 
@@ -438,9 +432,7 @@ class GroqProvider:
                     timeout=self.timeout,
                 )
 
-                http_request_ms = (
-                    time.perf_counter() - http_started
-                ) * 1000
+                http_request_ms = (time.perf_counter() - http_started) * 1000
 
             except httpx.TimeoutException as exc:
                 _log_groq_attempt_timing(
@@ -454,9 +446,7 @@ class GroqProvider:
                     error_type="timeout",
                 )
 
-                last_exc = AITimeoutError(
-                    f"Groq timeout after {self.timeout}s"
-                )
+                last_exc = AITimeoutError(f"Groq timeout after {self.timeout}s")
 
                 log.warning(
                     "Groq sync timeout (attempt %d/%d)",
@@ -483,9 +473,7 @@ class GroqProvider:
                     error_type="http_error",
                 )
 
-                last_exc = AIProviderError(
-                    f"Groq network error: {exc}"
-                )
+                last_exc = AIProviderError(f"Groq network error: {exc}")
 
                 log.warning(
                     "Groq sync network error (attempt %d): %s",
@@ -533,10 +521,7 @@ class GroqProvider:
                 resp.text if resp.status_code >= 400 else "",
             )
 
-            if (
-                resp.status_code in RETRYABLE_STATUS
-                and attempt <= self.max_retries
-            ):
+            if resp.status_code in RETRYABLE_STATUS and attempt <= self.max_retries:
                 log.warning(
                     "Groq sync retryable status %s (attempt %d)",
                     resp.status_code,
@@ -558,10 +543,7 @@ class GroqProvider:
                     )
                     and attempt <= self.max_retries
                 ):
-                    log.warning(
-                        "Groq json_validate_failed; "
-                        "retrying without response_format"
-                    )
+                    log.warning("Groq json_validate_failed; retrying without response_format")
 
                     payload.pop("response_format", None)
                     json_mode = False
@@ -569,15 +551,11 @@ class GroqProvider:
                     time.sleep(0.2)
                     continue
 
-                raise AIProviderError(
-                    f"Groq HTTP {resp.status_code}: {body[:300]}"
-                )
+                raise AIProviderError(f"Groq HTTP {resp.status_code}: {body[:300]}")
 
             data = resp.json()
 
-            latency_ms = (
-                time.perf_counter() - attempt_started
-            ) * 1000
+            latency_ms = (time.perf_counter() - attempt_started) * 1000
 
             result = self._parse_response(data, self.model)
             result.latency_ms = latency_ms
@@ -598,6 +576,4 @@ class GroqProvider:
 
             return result
 
-        raise AIProviderError(
-            f"Groq sync failed after retries: {last_exc}"
-        )
+        raise AIProviderError(f"Groq sync failed after retries: {last_exc}")

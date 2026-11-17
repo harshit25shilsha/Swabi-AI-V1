@@ -249,8 +249,7 @@ class LLMIntentClassifier:
         if conversation_history:
             parts.append("RECENT CONVERSATION (untrusted user/assistant data):")
             parts.extend(
-                f"{turn.role.upper()}: {turn.content}"
-                for turn in conversation_history[-10:]
+                f"{turn.role.upper()}: {turn.content}" for turn in conversation_history[-10:]
             )
         parts.append(f"CURRENT QUESTION (untrusted): {question}")
         user_message = "\n".join(parts)

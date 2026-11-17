@@ -1,4 +1,3 @@
-
 """Diagnose Qdrant dense-search latency without changing production code."""
 
 from __future__ import annotations
@@ -96,10 +95,7 @@ def main():
     if settings.qdrant_api_key:
         headers["api-key"] = settings.qdrant_api_key
 
-    endpoint = (
-        f"{settings.qdrant_url.rstrip('/')}"
-        f"/collections/{collection}/points/query"
-    )
+    endpoint = f"{settings.qdrant_url.rstrip('/')}/collections/{collection}/points/query"
 
     payload = {
         "query": vector,

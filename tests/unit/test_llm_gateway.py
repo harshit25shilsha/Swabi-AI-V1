@@ -244,9 +244,11 @@ def test_sync_structured_output_retries_truncation_with_more_tokens():
     assert output.name == "Swabi"
     assert provider.generate_sync.call_count == 3
     assert provider.generate_sync.call_args_list[0].kwargs["max_tokens"] == 512
-    assert [
-        call.kwargs["max_tokens"] for call in provider.generate_sync.call_args_list
-    ] == [512, 1024, 2048]
+    assert [call.kwargs["max_tokens"] for call in provider.generate_sync.call_args_list] == [
+        512,
+        1024,
+        2048,
+    ]
 
 
 @pytest.mark.asyncio
@@ -266,9 +268,11 @@ async def test_async_structured_output_retries_empty_truncated_response():
     output = await gw.generate_structured("prompt", _Out, max_tokens=512)
 
     assert output.name == "Swabi"
-    assert [
-        call.kwargs["max_tokens"] for call in provider.generate.call_args_list
-    ] == [512, 1024, 2048]
+    assert [call.kwargs["max_tokens"] for call in provider.generate.call_args_list] == [
+        512,
+        1024,
+        2048,
+    ]
 
 
 def test_sync_structured_output_keeps_budget_for_non_truncation_error():

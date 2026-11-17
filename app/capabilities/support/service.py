@@ -134,6 +134,7 @@ def _insufficient_message(audience: str) -> str:
         "Swabi Support."
     )
 
+
 def _log_support_stage(
     stage: str,
     started_at: float,
@@ -152,6 +153,7 @@ def _log_support_stage(
             **fields,
         },
     )
+
 
 def _live_data_message(audience: str) -> str:
     if audience == "vendor":
@@ -184,10 +186,7 @@ def _build_user_message(
             "RECENT CONVERSATION (untrusted context; use only to resolve "
             "references and follow-up constraints):"
         )
-        parts.extend(
-            f"{turn.role.upper()}: {turn.content}"
-            for turn in conversation_history[-10:]
-        )
+        parts.extend(f"{turn.role.upper()}: {turn.content}" for turn in conversation_history[-10:])
 
     if live_text:
         parts.append(
@@ -323,6 +322,7 @@ def _get_resolver() -> IntentResolver:
         )
     return _resolver
 
+
 _default_retriever: RagRetriever | None = None
 _retriever_lock = threading.Lock()
 
@@ -337,7 +337,6 @@ def _get_retriever() -> RagRetriever:
                 _default_retriever = RagRetriever()
 
     return _default_retriever
-
 
 
 # ---------------------------------------------------------------------------
@@ -379,12 +378,12 @@ def ask(
         resolved.intent == LiveDataIntent.MY_PAYMENTS and requested_limit is None
     )
     _log_support_stage(
-    "intent_resolution",
-    intent_started,
-    intent=resolved.intent.value,
-    intent_source=resolved.source,
-    use_rag=resolved.use_rag,
-)
+        "intent_resolution",
+        intent_started,
+        intent=resolved.intent.value,
+        intent_source=resolved.source,
+        use_rag=resolved.use_rag,
+    )
     use_rag = resolved.use_rag is True
 
     # Recognized live-data intents whose backend integration is not wired yet.
@@ -455,18 +454,13 @@ def ask(
             try:
                 fetch_entities = {
                     **resolved.entities,
-                    **(
-                        {"limit": requested_limit}
-                        if requested_limit is not None
-                        else {}
-                    ),
+                    **({"limit": requested_limit} if requested_limit is not None else {}),
                 }
                 package_search_query = None
                 if resolved.intent == LiveDataIntent.PACKAGE_SEARCH:
-                    package_search_query = (
-                        resolved.entities.get("destination")
-                        or resolved.entities.get("query")
-                    )
+                    package_search_query = resolved.entities.get(
+                        "destination"
+                    ) or resolved.entities.get("query")
                     # Fetch enough catalogue rows to apply the requested
                     # destination and result limit locally if the API ignores
                     # its destination filter.
@@ -504,14 +498,10 @@ def ask(
                     resolved.intent,
                     payload,
                     limit=(
-                        MAX_SUPPORT_LIST_ITEMS
-                        if summarize_payment_history
-                        else requested_limit
+                        MAX_SUPPORT_LIST_ITEMS if summarize_payment_history else requested_limit
                     ),
                     search_query=(
-                        package_search_query
-                        if isinstance(package_search_query, str)
-                        else None
+                        package_search_query if isinstance(package_search_query, str) else None
                     ),
                 )
                 if (
@@ -525,7 +515,9 @@ def ask(
                         "group size with the package provider before booking."
                     )
                 live_data_used = True
-                live_data_sources = [endpoint_label]
+                live_data_sources = (
+                    endpoint_label if isinstance(endpoint_label, list) else [endpoint_label]
+                )
                 log.info(
                     "support_live_data_fetched",
                     extra={
@@ -617,8 +609,7 @@ def ask(
                 extra={"q_hash": q_hash, "reason": version.reason},
             )
             live_data_warning = (
-                "The knowledge base is unavailable. The answer uses live "
-                "information only."
+                "The knowledge base is unavailable. The answer uses live information only."
             )
 
     # ------------------------------------------------------------------
@@ -629,8 +620,7 @@ def ask(
     if should_retrieve and version_ok:
         assert r is not None
         retrieval_question = "\n".join(
-            [turn.content for turn in request.conversation_history[-6:]]
-            + [request.question]
+            [turn.content for turn in request.conversation_history[-6:]] + [request.question]
         )
         try:
             chunks = r.search(
@@ -659,8 +649,7 @@ def ask(
                     live_data_warning=live_data_warning,
                 )
             live_data_warning = (
-                "Knowledge-base retrieval failed. The answer uses live account "
-                "information only."
+                "Knowledge-base retrieval failed. The answer uses live account information only."
             )
         except Exception as exc:  # noqa: BLE001
             log.exception(
@@ -676,8 +665,7 @@ def ask(
                     live_data_warning=live_data_warning,
                 )
             live_data_warning = (
-                "Knowledge-base retrieval failed. The answer uses live account "
-                "information only."
+                "Knowledge-base retrieval failed. The answer uses live account information only."
             )
         finally:
             _log_support_stage(
@@ -725,11 +713,11 @@ def ask(
     )
 
     _log_support_stage(
-    "prompt_construction",
-    prompt_started,
-    chunk_count=len(chunks),
-    prompt_chars=len(user_message),
-    live_data_included=live_text is not None,
+        "prompt_construction",
+        prompt_started,
+        chunk_count=len(chunks),
+        prompt_chars=len(user_message),
+        live_data_included=live_text is not None,
     )
 
     llm_stage_started = time.perf_counter()
@@ -812,11 +800,7 @@ def ask(
             confidence=0.7,
         )
 
-    if (
-        resolved.intent == LiveDataIntent.PACKAGE_SEARCH
-        and live_data_used
-        and live_text
-    ):
+    if resolved.intent == LiveDataIntent.PACKAGE_SEARCH and live_data_used and live_text:
         # Catalogue answers are serialized from the verified records rather
         # than trusting generated text to preserve destination and package IDs.
         # This also prevents mixed RAG/catalogue questions from reintroducing

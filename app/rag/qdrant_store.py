@@ -111,10 +111,10 @@ def _retrieval_filter(
 def _tokenize(text: str) -> list[str]:
     return re.findall(r"\w+", text.casefold())
 
+
 def _cache_scope_value(value: str | None) -> str | None:
     """Normalize values whose retrieval filters are semantically identical."""
     return None if value in (None, "both") else value
-
 
 
 class QdrantStore:
@@ -177,9 +177,7 @@ class QdrantStore:
                             "client_id": id(client),
                             "process_id": os.getpid(),
                             "thread_id": threading.get_ident(),
-                            "client_init_ms": round(
-                                (perf_counter() - init_started) * 1000, 2
-                            ),
+                            "client_init_ms": round((perf_counter() - init_started) * 1000, 2),
                         },
                     )
 
@@ -339,7 +337,6 @@ class QdrantStore:
         except Exception as exc:  # noqa: BLE001
             log.warning("delete_collection %s failed: %s", name, exc)
 
-
     def search(
         self,
         query_vector: list[float],
@@ -358,22 +355,14 @@ class QdrantStore:
         # Measure client acquisition separately.
         client_started = perf_counter()
         client = self._get_client()
-        client_ms = round(
-            (perf_counter() - client_started) * 1000, 2
-        )
+        client_ms = round((perf_counter() - client_started) * 1000, 2)
 
         # Measure filter construction separately.
         filter_started = perf_counter()
         query_filter = _retrieval_filter(audience, area)
-        filter_ms = round(
-            (perf_counter() - filter_started) * 1000, 2
-        )
+        filter_ms = round((perf_counter() - filter_started) * 1000, 2)
 
-        collection_name = (
-            self.versioned_name(index_version)
-            if index_version
-            else self.alias_name()
-        )
+        collection_name = self.versioned_name(index_version) if index_version else self.alias_name()
 
         # This includes HTTP transport, waiting, and Qdrant response.
         query_started = perf_counter()
@@ -388,9 +377,7 @@ class QdrantStore:
                 with_payload=True,
             )
         except Exception as exc:
-            query_ms = round(
-                (perf_counter() - query_started) * 1000, 2
-            )
+            query_ms = round((perf_counter() - query_started) * 1000, 2)
 
             log.exception(
                 "qdrant dense query failed",
@@ -417,9 +404,7 @@ class QdrantStore:
             )
             raise
 
-        query_ms = round(
-            (perf_counter() - query_started) * 1000, 2
-        )
+        query_ms = round((perf_counter() - query_started) * 1000, 2)
 
         # Measure response-to-object conversion.
         mapping_started = perf_counter()
@@ -437,12 +422,8 @@ class QdrantStore:
                 )
             )
 
-        mapping_ms = round(
-            (perf_counter() - mapping_started) * 1000, 2
-        )
-        total_ms = round(
-            (perf_counter() - total_started) * 1000, 2
-        )
+        mapping_ms = round((perf_counter() - mapping_started) * 1000, 2)
+        total_ms = round((perf_counter() - total_started) * 1000, 2)
 
         log.info(
             "rag qdrant dense search timing",
@@ -475,7 +456,6 @@ class QdrantStore:
 
         return out
 
-
     def warm_keyword_index(
         self,
         *,
@@ -499,8 +479,6 @@ class QdrantStore:
             index_version=index_version,
         )
         return True
-
-
 
     def keyword_search(
         self,

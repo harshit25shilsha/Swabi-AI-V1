@@ -106,9 +106,7 @@ def test_location_package_search_filters_api_results_and_uses_verified_output(
     patch_gateway.generate_structured_sync.return_value = LLMAnswerOutput(
         answer_type=AnswerType.ANSWERED,
         answer=(
-            "Here are two packages:\n"
-            "- Rishikesh Tours (PKG-922)\n"
-            "- Uttar Pradesh Tour (PKG-921)"
+            "Here are two packages:\n- Rishikesh Tours (PKG-922)\n- Uttar Pradesh Tour (PKG-921)"
         ),
         citation_chunk_ids=[],
         confidence=0.99,

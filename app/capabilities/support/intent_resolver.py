@@ -84,7 +84,6 @@ _POPULAR_DESTINATIONS = re.compile(r"\b(popular|trending)\s+destinations?\b", re
 _LIST_INTENTS = {
     LiveDataIntent.MY_BOOKINGS,
     LiveDataIntent.MY_PAYMENTS,
-    LiveDataIntent.MY_ENQUIRY_BIDS,
     LiveDataIntent.MY_COIN_HISTORY,
     LiveDataIntent.MY_ENQUIRIES,
     LiveDataIntent.PACKAGE_SEARCH,
@@ -367,8 +366,7 @@ class IntentResolver:
                 intent=llm_result.intent,
                 entities=(
                     {**llm_result.entities, "query": package_location}
-                    if llm_result.intent == LiveDataIntent.PACKAGE_SEARCH
-                    and package_location
+                    if llm_result.intent == LiveDataIntent.PACKAGE_SEARCH and package_location
                     else llm_result.entities
                 ),
                 source="llm",

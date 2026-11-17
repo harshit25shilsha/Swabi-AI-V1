@@ -202,3 +202,23 @@ def test_public_package_detail_resolves_code_or_uuid(question, expected_entity):
 
     assert result.intent == LiveDataIntent.PACKAGE_DETAIL
     assert result.entities == expected_entity
+
+
+def test_named_enquiry_bid_question_extracts_destination():
+    result = classify(
+        "Show me the bids on my Goa enquiry in details",
+        "customer",
+    )
+
+    assert result.intent == LiveDataIntent.MY_ENQUIRY_BIDS
+    assert result.entities["enquiry_query"] == "Goa"
+
+
+def test_general_enquiry_bid_question_has_no_specific_target():
+    result = classify(
+        "Check if any vendor bids are on any of my enquiries",
+        "customer",
+    )
+
+    assert result.intent == LiveDataIntent.MY_ENQUIRY_BIDS
+    assert "enquiry_query" not in result.entities

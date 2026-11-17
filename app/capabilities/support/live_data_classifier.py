@@ -93,6 +93,33 @@ def _extract_uuid(q: str) -> str | None:
     return m.group(0) if m else None
 
 
+def _extract_enquiry_query(question: str) -> str | None:
+    """Extract an explicitly named customer enquiry, such as 'Goa enquiry'."""
+    patterns = (
+        r"\bmy\s+([a-z0-9][a-z0-9 '&-]{0,50}?)\s+enquir(?:y|ies)\b",
+        r"\b(?:on|for)\s+([a-z0-9][a-z0-9 '&-]{0,50}?)\s+enquir(?:y|ies)\b",
+    )
+
+    for pattern in patterns:
+        match = re.search(pattern, question, re.IGNORECASE)
+        if match:
+            target = match.group(1).strip(" -'\"")
+            if target.casefold() not in {
+                "any",
+                "one",
+                "single",
+                "latest",
+                "recent",
+                "last",
+                "my",
+                "any of my",
+                "all my",
+            }:
+                return target
+
+    return None
+
+
 def _extract_booking_id(q: str) -> str | None:
     """Return a UUID or booking code (``BK-XXXX``) if present.
 
@@ -177,7 +204,10 @@ _MY_BOOKING_DETAIL_CONTEXT = [
 ]
 
 _MY_ENQUIRY_BIDS_CONTEXT = [
-    re.compile(r"\bbids?\s+(on|for)\s+(my\s+|the\s+)?enquir", re.I),
+    re.compile(
+        r"\bbids?\s+(?:are\s+)?(?:on|for)\s+(?:any\s+of\s+)?(?:my\s+|the\s+)?enquir",
+        re.I,
+    ),
     re.compile(
         r"\bbids?\s+(on|for)\s+(?:my\s+)?(?:any\s+)?(?:one\s+)?"
         r"(?:single\s+)?enquir",
@@ -186,6 +216,11 @@ _MY_ENQUIRY_BIDS_CONTEXT = [
     re.compile(r"\bwho\s+bid\s+(on|for)\s+(my\s+|the\s+)?enquir", re.I),
     re.compile(r"\bproposals?\s+(on|for)\s+(my\s+|the\s+)?enquir", re.I),
     re.compile(r"\benquir(y|ies)\s+bids?\b", re.I),
+    re.compile(
+        r"\bbids?\s+(?:on|for)\s+(?:my\s+)?"
+        r"[a-z0-9][a-z0-9 '&-]{0,50}\s+enquir(?:y|ies)\b",
+        re.I,
+    ),
 ]
 
 
@@ -389,7 +424,15 @@ def classify(question: str, audience: str) -> ClassifiedIntent:
         # MY_ENQUIRY_BIDS requires both bids context and an enquiry ID.
         if _matches(_MY_ENQUIRY_BIDS_CONTEXT, q):
             enquiry_id = _extract_uuid(q)
-            entities = {"enquiry_id": enquiry_id} if enquiry_id else {}
+            entities = {}
+
+            if enquiry_id:
+                entities["enquiry_id"] = enquiry_id
+
+            enquiry_query = _extract_enquiry_query(q)
+            if enquiry_query:
+                entities["enquiry_query"] = enquiry_query
+
             return ClassifiedIntent(
                 LiveDataIntent.MY_ENQUIRY_BIDS,
                 entities,

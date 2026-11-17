@@ -130,7 +130,6 @@ def _get_live_data_client() -> tuple[httpx.Client, float]:
     return client, (time.perf_counter() - started) * 1000
 
 
-
 # ---------------------------------------------------------------------------
 # Transport
 # ---------------------------------------------------------------------------
@@ -166,9 +165,7 @@ def _get(
     except LiveDataFetchError:
         raise
     except Exception as exc:
-        raise LiveDataFetchError(
-            f"{path}: HTTP client initialization failed"
-        ) from exc
+        raise LiveDataFetchError(f"{path}: HTTP client initialization failed") from exc
 
     for attempt in range(1, LIVE_FETCH_MAX_ATTEMPTS + 1):
         http_request_ms = 0.0
@@ -185,9 +182,7 @@ def _get(
                 params=params or {},
             )
 
-            http_request_ms = (
-                time.perf_counter() - http_started
-            ) * 1000
+            http_request_ms = (time.perf_counter() - http_started) * 1000
 
             log.info(
                 "live_data_http_timing",
@@ -206,10 +201,7 @@ def _get(
                     "shared_client": True,
                 },
             )
-            if (
-                resp.status_code in _RETRYABLE_STATUS_CODES
-                and attempt < LIVE_FETCH_MAX_ATTEMPTS
-            ):
+            if resp.status_code in _RETRYABLE_STATUS_CODES and attempt < LIVE_FETCH_MAX_ATTEMPTS:
                 delay = _retry_delay(attempt)
                 log.warning(
                     "live_data_http_retryable_status",
@@ -281,9 +273,7 @@ def _get(
         raise LiveDataFetchError(f"{path}: 401 unauthorized")
 
     if resp.status_code >= 400:
-        raise LiveDataFetchError(
-            f"{path}: HTTP {resp.status_code}: {resp.text[:200]}"
-        )
+        raise LiveDataFetchError(f"{path}: HTTP {resp.status_code}: {resp.text[:200]}")
 
     try:
         body = resp.json()
@@ -296,8 +286,7 @@ def _get(
     if set(body.keys()) == {"payload"}:
         if not settings.swabi_response_passphrase:
             raise LiveDataFetchError(
-                f"{path}: encrypted response but "
-                "SWABI_RESPONSE_PASSPHRASE is not configured"
+                f"{path}: encrypted response but SWABI_RESPONSE_PASSPHRASE is not configured"
             )
 
         log.info(
@@ -315,26 +304,18 @@ def _get(
                 kdf=settings.swabi_response_kdf,
             )
         except SwabiDecryptionError as exc:
-            raise LiveDataFetchError(
-                f"{path}: decryption failed: {exc}"
-            ) from exc
+            raise LiveDataFetchError(f"{path}: decryption failed: {exc}") from exc
 
         try:
             body = json.loads(plaintext)
         except json.JSONDecodeError as exc:
-            raise LiveDataFetchError(
-                f"{path}: decrypted payload is not JSON: {exc}"
-            ) from exc
+            raise LiveDataFetchError(f"{path}: decrypted payload is not JSON: {exc}") from exc
 
         if not isinstance(body, dict):
-            raise LiveDataFetchError(
-                f"{path}: decrypted response is not a dict"
-            )
+            raise LiveDataFetchError(f"{path}: decrypted response is not a dict")
 
     if not body.get("success", True):
-        raise LiveDataFetchError(
-            f"{path}: {body.get('message', 'error')}"
-        )
+        raise LiveDataFetchError(f"{path}: {body.get('message', 'error')}")
 
     log.info(
         "live_data_fetch_completed",
@@ -352,6 +333,7 @@ def _get(
     )
 
     return body
+
 
 def _unwrap(response: dict[str, Any]) -> Any:
     return response.get("data")
@@ -673,6 +655,31 @@ def _created_at_timestamp(enquiry: dict[str, Any]) -> float:
     return parsed.timestamp()
 
 
+def _normalize_enquiry_name(value: Any) -> str:
+    """Normalize enquiry title/destination for safe name matching."""
+    return re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold()).strip()
+
+
+def _find_customer_enquiry(
+    enquiries: list[dict[str, Any]],
+    enquiry_query: str,
+) -> list[dict[str, Any]]:
+    target = _normalize_enquiry_name(enquiry_query)
+    if not target:
+        return []
+
+    matches = []
+
+    for enquiry in enquiries:
+        title = _normalize_enquiry_name(enquiry.get("title"))
+        destination = _normalize_enquiry_name(enquiry.get("destination"))
+
+        if target == title or target == destination or title.startswith(f"{target} "):
+            matches.append(enquiry)
+
+    return matches
+
+
 def fetch_for_intent(
     intent: LiveDataIntent,
     *,
@@ -691,38 +698,109 @@ def fetch_for_intent(
     if intent == LiveDataIntent.MY_ENQUIRY_BIDS:
         enquiry_id = entities.get("enquiry_id") or entities.get("id")
         enquiry_id_str = str(enquiry_id) if enquiry_id is not None else None
+
+        # Specific enquiry: retain detailed bid lookup.
         if enquiry_id_str and _UUID_RE.match(enquiry_id_str):
             payload = handler(user_jwt, enquiry_id_str)
             return _ENDPOINT_LABEL[intent], payload
+        enquiry_query = entities.get("enquiry_query")
 
+        if isinstance(enquiry_query, str) and enquiry_query.strip():
+            enquiries_payload = fetch_my_enquiries(user_jwt)
+            enquiries = [
+                item
+                for item in enquiries_payload.get("enquiries", [])
+                if isinstance(item, dict) and not item.get("isDeleted", False)
+            ]
+
+            matches = _find_customer_enquiry(
+                enquiries,
+                enquiry_query,
+            )
+
+            if not matches:
+                return (
+                    "GET /api/enquiries/my",
+                    {
+                        "resolution": "not_found",
+                        "enquiry_query": enquiry_query,
+                    },
+                )
+
+            if len(matches) > 1:
+                return (
+                    "GET /api/enquiries/my",
+                    {
+                        "resolution": "ambiguous",
+                        "enquiry_query": enquiry_query,
+                        "matching_enquiries": [
+                            {
+                                "title": item.get("title"),
+                                "destination": item.get("destination"),
+                            }
+                            for item in matches
+                        ],
+                    },
+                )
+
+            enquiry = matches[0]
+            enquiry_id = enquiry.get("id")
+
+            if not isinstance(enquiry_id, str) or not _UUID_RE.fullmatch(enquiry_id):
+                raise LiveDataFetchError("Matched enquiry does not contain a valid ID")
+
+            bids_payload = handler(user_jwt, enquiry_id)
+
+            return (
+                [
+                    "GET /api/enquiries/my",
+                    "GET /api/bids/enquiry/{enquiryId}",
+                ],
+                {
+                    **bids_payload,
+                    "enquiry": enquiry,
+                },
+            )
+
+        # General question: summarize bids across ALL customer enquiries.
         enquiries_payload = fetch_my_enquiries(user_jwt)
+
         enquiries = [
             item
             for item in enquiries_payload["enquiries"]
             if isinstance(item, dict) and not item.get("isDeleted", False)
         ]
-        if not enquiries:
-            return (
-                "GET /api/enquiries/my",
-                {"enquiry": None, "bids": [], "total": 0},
-            )
 
-        latest = max(enquiries, key=_created_at_timestamp)
-        latest_id = latest.get("id")
-        if not isinstance(latest_id, str) or not _UUID_RE.match(latest_id):
-            raise LiveDataFetchError("most recent enquiry does not contain a valid ID")
+        enquiries_with_bids = []
+        total_bids = 0
 
-        bids = handler(user_jwt, latest_id)
+        for enquiry in enquiries:
+            raw_count = enquiry.get("bidCount", 0)
+
+            try:
+                bid_count = max(0, int(raw_count)) if not isinstance(raw_count, bool) else 0
+            except (TypeError, ValueError):
+                bid_count = 0
+
+            total_bids += bid_count
+
+            if bid_count > 0:
+                enquiries_with_bids.append(
+                    {
+                        "enquiry_id": enquiry.get("id"),
+                        "title": enquiry.get("title"),
+                        "destination": enquiry.get("destination"),
+                        "bid_count": bid_count,
+                    }
+                )
+
         return (
-            "GET /api/enquiries/my + GET /api/bids/enquiry/{enquiryId}",
+            "GET /api/enquiries/my",
             {
-                "enquiry": {
-                    "id": latest_id,
-                    "title": latest.get("title"),
-                    "destination": latest.get("destination"),
-                    "createdAt": latest.get("createdAt"),
-                },
-                **bids,
+                "scope": "all_customer_enquiries",
+                "total_enquiries": len(enquiries),
+                "total_bids": total_bids,
+                "enquiries_with_bids": enquiries_with_bids,
             },
         )
 

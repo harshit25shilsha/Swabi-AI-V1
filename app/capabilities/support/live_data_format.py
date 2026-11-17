@@ -224,33 +224,88 @@ def _fmt_my_enquiries(payload: dict[str, Any]) -> str:
 
 
 def _fmt_my_enquiry_bids(payload: dict[str, Any]) -> str:
+
+    resolution = payload.get("resolution")
+
+    if resolution == "not_found":
+        return (
+            f"I couldn't find an enquiry matching "
+            f"'{_s(payload.get('enquiry_query'))}' in your enquiries."
+        )
+
+    if resolution == "ambiguous":
+        matches = payload.get("matching_enquiries", [])
+        options = [f"- {_s(item.get('title') or item.get('destination'))}" for item in matches]
+        return "I found multiple matching enquiries. Which one do you mean?\n" + "\n".join(options)
+
+    # General customer-level bid summary.
+    if payload.get("scope") == "all_customer_enquiries":
+        total_enquiries = payload.get("total_enquiries", 0)
+        total_bids = payload.get("total_bids", 0)
+        enquiries_with_bids = payload.get("enquiries_with_bids", [])
+
+        if total_enquiries == 0:
+            return "You don't have any enquiries yet."
+
+        if total_bids == 0:
+            return f"No vendor bids have been received across your {total_enquiries} enquiries yet."
+
+        shown = enquiries_with_bids[:_MAX_ITEMS]
+
+        lines = [
+            f"Yes! You have received {total_bids} vendor bids "
+            f"across {len(enquiries_with_bids)} of your "
+            f"{total_enquiries} enquiries:"
+        ]
+
+        for enquiry in shown:
+            title = enquiry.get("title") or enquiry.get("destination") or "Untitled enquiry"
+            count = enquiry.get("bid_count", 0)
+
+            lines.append(f'- "{_s(title)}" — {count} {"bid" if count == 1 else "bids"}')
+
+        if len(enquiries_with_bids) > len(shown):
+            lines.append(
+                f"And {len(enquiries_with_bids) - len(shown)} more enquiries have received bids."
+            )
+
+        return "\n".join(lines)
+
+    # Existing specific-enquiry detail response.
     enquiry = payload.get("enquiry")
-    if payload.get("enquiry") is None and "enquiry" in payload:
+
+    if enquiry is None and "enquiry" in payload:
         return "You don't have any enquiries to check for bids."
 
     bids = payload.get("bids", [])[:_MAX_ITEMS]
     total = payload.get("total", len(bids))
+
     if not bids:
         if isinstance(enquiry, dict):
-            title = enquiry.get("title") or enquiry.get("destination") or "your most recent enquiry"
+            title = enquiry.get("title") or enquiry.get("destination") or "your enquiry"
             return f"No bids have been received on {_s(title)} yet."
+
         return "No bids have been received on this enquiry yet."
 
     if isinstance(enquiry, dict):
-        title = enquiry.get("title") or enquiry.get("destination") or "your most recent enquiry"
-        header = f"BIDS ON YOUR MOST RECENT ENQUIRY ({_s(title)}; showing {len(bids)} of {total}):"
+        title = enquiry.get("title") or enquiry.get("destination") or "your enquiry"
+        header = f"BIDS ON YOUR ENQUIRY ({_s(title)}; showing {len(bids)} of {total}):"
     else:
-        header = f"BIDS ON YOUR ENQUIRY (most recent {len(bids)} of {total}):"
+        header = f"BIDS ON YOUR ENQUIRY (showing {len(bids)} of {total}):"
+
     lines = [header]
-    for b in bids:
-        agent = b.get("agent") or {}
+
+    for bid in bids:
+        agent = bid.get("agent") or {}
+
         lines.append(
-            f"- {_money(b.get('amount'), b.get('currency') or 'INR')} "
+            f"- {_money(bid.get('amount'), bid.get('currency') or 'INR')} "
             f"from {_s(agent.get('companyName'))} | "
-            f"status={_s(b.get('status'))} | "
-            f"negotiation={_s(b.get('negotiationStatus'))} | "
-            f"created={_date(b.get('createdAt'))}"
+            f"status={_s(bid.get('status'))} | "
+            f"negotiation={_s(bid.get('negotiationStatus'))} | "
+            f"created={_date(bid.get('createdAt'))}"
         )
+
     return "\n".join(lines)
 
 
@@ -615,11 +670,7 @@ def format_for_intent(
     fmt = _FORMATTERS.get(intent)
     if fmt is None:
         return "Live data available but not formatted."
-    if (
-        intent == LiveDataIntent.PACKAGE_SEARCH
-        and search_query
-        and isinstance(payload, dict)
-    ):
+    if intent == LiveDataIntent.PACKAGE_SEARCH and search_query and isinstance(payload, dict):
         payload = filter_package_payload_by_location(payload, search_query)
     if limit is None:
         limit = DEFAULT_SUPPORT_LIST_ITEMS

@@ -39,6 +39,7 @@ setup_logging()
 
 logger = logging.getLogger(__name__)
 
+
 def _warm_support_bm25() -> None:
     """Warm BM25 indexes for supported customer/vendor retrieval scopes.
 

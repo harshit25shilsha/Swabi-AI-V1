@@ -746,6 +746,54 @@ It does not expose season, travel-date availability, budget, or group-size
 filters. Support responses must not claim those constraints have been
 applied or that matching availability is confirmed.
 
+### Customer enquiry-bid classification and retrieval
+
+`MY_ENQUIRY_BIDS` is a customer-only live intent. It is intentionally checked
+before the general `MY_ENQUIRIES` list intent: a question about bids must not
+silently become a request to list enquiries. The deterministic bid patterns
+cover direct forms (for example, "bids on my enquiry"), named forms (for
+example, "bids on my Goa enquiry"), and aggregate forms (for example, "are
+there bids on any of my enquiries?").
+
+The classifier may attach either an `enquiry_id` (a UUID) or an
+`enquiry_query` (an explicitly named title/destination). Generic qualifiers
+such as `any`, `latest`, and `all my` are not treated as a named enquiry.
+
+```text
+Customer bid question
+        |
+        v
+MY_ENQUIRY_BIDS classifier (before MY_ENQUIRIES)
+        |
+        +-- UUID ----------> GET /api/bids/enquiry/{enquiryId}
+        |
+        +-- named enquiry -> GET /api/enquiries/my
+        |                         |
+        |                         +-- one normalised title/destination match
+        |                         |       -> GET /api/bids/enquiry/{enquiryId}
+        |                         +-- zero or multiple matches
+        |                                 -> deterministic not-found/disambiguation text
+        |
+        +-- general enquiry -> GET /api/enquiries/my
+                                  -> sum `bidCount` for non-deleted enquiries
+                                  -> deterministic aggregate summary
+```
+
+The aggregate route intentionally does not call the detailed bid endpoint for
+every enquiry. It avoids an N+1 request pattern and reports only the counts
+already present in the authorised enquiry list. The named route makes the
+second call only after resolving exactly one enquiry ID. Formatter output is
+allowlisted: detailed results contain bid amount, currency, vendor company,
+status, negotiation status, and creation date; aggregates contain counts and
+enquiry titles/destinations only.
+
+This is live account retrieval, not RAG retrieval. RAG remains responsible
+for stable bidding process and policy questions. The implementation assumes
+that `GET /api/enquiries/my` provides the complete authorised enquiry set and
+accurate `bidCount` values; if NestJS paginates or changes that field, the
+support summary must be updated with explicit pagination/contract handling
+before it can claim to cover all enquiries.
+
 ### Retrieval, policy lifecycle, and answers
 
 The knowledge path:

@@ -217,16 +217,12 @@ def test_clarifying_questions_capped_at_max():
 
 
 def test_clarifying_questions_skips_optional_and_unknown_fields():
-    qs = generate_clarifying_questions(
-        ["not_a_real_field", FIELD_TOUR_GUIDE, FIELD_ACTIVITIES]
-    )
+    qs = generate_clarifying_questions(["not_a_real_field", FIELD_TOUR_GUIDE, FIELD_ACTIVITIES])
     assert qs == []
 
 
 def test_clarifying_questions_defer_recommendations_until_core_is_complete():
-    qs = generate_clarifying_questions(
-        [FIELD_DESTINATION, FIELD_BUDGET, FIELD_ACCOMMODATION]
-    )
+    qs = generate_clarifying_questions([FIELD_DESTINATION, FIELD_BUDGET, FIELD_ACCOMMODATION])
     assert [question.field for question in qs] == [FIELD_DESTINATION]
 
 

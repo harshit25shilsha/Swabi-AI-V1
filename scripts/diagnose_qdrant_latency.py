@@ -1,17 +1,17 @@
-
-import os
 import math
+import os
 import socket
 import ssl
 import statistics
 import sys
-from qdrant_client import QdrantClient
 from importlib.metadata import version
 from pathlib import Path
 from time import perf_counter
 from urllib.parse import urlparse
+
 import httpx
 import qdrant_client
+from qdrant_client import QdrantClient
 
 # Add project root to Python import path.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -56,12 +56,10 @@ def test_connection_phases(url: str) -> None:
             print("DNS returned no addresses.")
             return
 
-
         for index, (family, socktype, proto, _, sockaddr) in enumerate(
             addresses,
             start=1,
         ):
-
             connection = socket.socket(family, socktype, proto)
             connection.settimeout(5)
 
@@ -70,20 +68,13 @@ def test_connection_phases(url: str) -> None:
                 connection.connect(sockaddr)
                 tcp_ms = (perf_counter() - started) * 1000
 
-                print(
-                    f"Address {index}: {sockaddr} | "
-                    f"TCP connected | {tcp_ms:.2f} ms"
-                )
+                print(f"Address {index}: {sockaddr} | TCP connected | {tcp_ms:.2f} ms")
 
             except OSError as exc:
-                print(
-                    f"Address {index}: {sockaddr} | "
-                    f"TCP failed | {type(exc).__name__}: {exc}"
-                )
+                print(f"Address {index}: {sockaddr} | TCP failed | {type(exc).__name__}: {exc}")
 
             finally:
                 connection.close()
-
 
         print(f"Resolved host: {host}")
         print(f"Resolved address count: {len(addresses)}")
@@ -156,6 +147,7 @@ def timed_httpx_test(
                 f"status={response.status_code}"
             )
 
+
 def test_httpx_response_phases(
     *,
     url: str,
@@ -214,6 +206,7 @@ def test_httpx_response_phases(
                 if response is not None:
                     response.close()
 
+
 def compare_localhost_and_ipv4(
     *,
     url: str,
@@ -260,11 +253,7 @@ def compare_localhost_and_ipv4(
                     )
 
             except Exception as exc:
-                print(
-                    f"Request {i} failed: "
-                    f"{type(exc).__name__}: {exc}"
-                )
-
+                print(f"Request {i} failed: {type(exc).__name__}: {exc}")
 
 
 def inspect_object(obj, name: str, depth: int = 0, seen=None) -> None:
@@ -278,10 +267,7 @@ def inspect_object(obj, name: str, depth: int = 0, seen=None) -> None:
     seen.add(id(obj))
     indent = "  " * depth
 
-    print(
-        f"{indent}{name}: "
-        f"{type(obj).__module__}.{type(obj).__name__}"
-    )
+    print(f"{indent}{name}: {type(obj).__module__}.{type(obj).__name__}")
 
     # Inspect object attributes without exposing their values.
     attributes = getattr(obj, "__dict__", {})
@@ -293,10 +279,7 @@ def inspect_object(obj, name: str, depth: int = 0, seen=None) -> None:
         ):
             continue
 
-        print(
-            f"{indent}  {attr_name}: "
-            f"{type(value).__module__}.{type(value).__name__}"
-        )
+        print(f"{indent}  {attr_name}: {type(value).__module__}.{type(value).__name__}")
 
         if depth < 5:
             inspect_object(
@@ -325,10 +308,7 @@ def inspect_object(obj, name: str, depth: int = 0, seen=None) -> None:
         ):
             continue
 
-        print(
-            f"{indent}  property {attr_name}: "
-            f"{type(value).__module__}.{type(value).__name__}"
-        )
+        print(f"{indent}  property {attr_name}: {type(value).__module__}.{type(value).__name__}")
 
         if depth < 5:
             inspect_object(
@@ -385,10 +365,9 @@ def test_sdk_operations(
         elapsed = (perf_counter() - started) * 1000
 
         print(
-            f"query_points {i}: "
-            f"client_total_ms={elapsed:.2f}, "
-            f"result_count={len(response.points)}"
+            f"query_points {i}: client_total_ms={elapsed:.2f}, result_count={len(response.points)}"
         )
+
 
 def benchmark_rest_vs_grpc(
     *,
@@ -433,10 +412,7 @@ def benchmark_rest_vs_grpc(
         )
 
     def result_ids(response):
-        return [
-            str(point.payload.get("chunk_id") or point.id)
-            for point in response.points
-        ]
+        return [str(point.payload.get("chunk_id") or point.id) for point in response.points]
 
     timings = {"REST": [], "gRPC": []}
     final_ids = {}
@@ -454,11 +430,7 @@ def benchmark_rest_vs_grpc(
         print("Running 20 measured requests per transport...")
 
         for iteration in range(20):
-            order = (
-                ("REST", "gRPC")
-                if iteration % 2 == 0
-                else ("gRPC", "REST")
-            )
+            order = ("REST", "gRPC") if iteration % 2 == 0 else ("gRPC", "REST")
 
             for name in order:
                 started = perf_counter()
@@ -579,7 +551,6 @@ def test_sdk_underlying_httpx(
         )
 
 
-
 def main() -> None:
     print("Generating query embedding...")
 
@@ -588,9 +559,7 @@ def main() -> None:
     store = QdrantStore()
     collection = store.current_versioned_collection()
     if not collection:
-        raise RuntimeError(
-            f"No active collection found for alias: {store.alias_name()}"
-        )
+        raise RuntimeError(f"No active collection found for alias: {store.alias_name()}")
 
     query_filter = _retrieval_filter(AUDIENCE, None)
 
@@ -605,10 +574,7 @@ def main() -> None:
         "with_vector": False,
     }
 
-    url = (
-        f"{settings.qdrant_url.rstrip('/')}"
-        f"/collections/{collection}/points/query"
-    )
+    url = f"{settings.qdrant_url.rstrip('/')}/collections/{collection}/points/query"
 
     headers = {
         "Content-Type": "application/json",
@@ -618,8 +584,7 @@ def main() -> None:
         headers["api-key"] = settings.qdrant_api_key
 
     proxy_configured = any(
-        os.environ.get(name)
-        for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")
+        os.environ.get(name) for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")
     )
 
     print(f"Collection: {collection}")
@@ -652,10 +617,10 @@ def main() -> None:
         body=body,
     )
     compare_localhost_and_ipv4(
-    url=url,
-    headers=headers,
-    body=body,
-)
+        url=url,
+        headers=headers,
+        body=body,
+    )
 
     # Test 3: Inspect installed SDK and transport.
     print("\n--- SDK TRANSPORT DIAGNOSTICS ---")
@@ -666,10 +631,10 @@ def main() -> None:
     # Initialize the actual client used by QdrantStore.
     client = store._get_client()
     test_sdk_underlying_httpx(
-    client=client,
-    url=url,
-    body=body,
-)
+        client=client,
+        url=url,
+        body=body,
+    )
     print("\n--- QDRANT REMOTE INTERNALS ---")
     inspect_object(client._client, "QdrantRemote")
 
@@ -692,6 +657,7 @@ def main() -> None:
         vector=vector,
         query_filter=query_filter,
     )
+
 
 if __name__ == "__main__":
     main()

@@ -401,6 +401,32 @@ Swabi database directly.
   Unsupported or out-of-scope questions receive a safe fallback with
   audience-specific app guidance.
 
+### Customer enquiry-bid retrieval
+
+Customer questions about bids on their own enquiries are a live-data path,
+not a Qdrant/RAG lookup. The deterministic classifier evaluates the
+bid-specific intent before the broader `MY_ENQUIRIES` intent, so wording such
+as "Are there vendor bids on any of my enquiries?" is not reduced to an
+enquiry-list request. The path is customer-only and still requires the
+original user JWT for every private NestJS API call.
+
+| User reference | Retrieval path | Result |
+|---|---|---|
+| Enquiry UUID | `GET /api/bids/enquiry/{enquiryId}` | Detailed bids for that authorised enquiry. |
+| Named enquiry, for example "my Goa enquiry" | `GET /api/enquiries/my`, then exact/normalised title or destination resolution; one match triggers `GET /api/bids/enquiry/{enquiryId}` | Detailed bids, or an explicit not-found/ambiguous response. |
+| General reference, for example "any of my enquiries" | `GET /api/enquiries/my` only | Aggregate bid counts from each non-deleted enquiry's `bidCount`; no per-enquiry bid endpoint calls. |
+
+The aggregate response includes the number of enquiries examined, total bid
+count, and only enquiries with one or more bids. Named-enquiry resolution is
+deliberately conservative: it does not guess between multiple matches. Its
+correctness depends on `/api/enquiries/my` returning the complete authorised
+enquiry set and a current `bidCount`; verify that NestJS response contract and
+pagination behaviour in the deployment environment.
+
+Stable questions such as how bidding works continue through approved RAG
+retrieval. The service never substitutes knowledge-base content for a failed
+or unavailable personal bid lookup, and it never writes enquiry or bid state.
+
 ### Phase 2 implementation and current status
 
 Implemented: dense + BM25 retrieval fused with RRF; optional local

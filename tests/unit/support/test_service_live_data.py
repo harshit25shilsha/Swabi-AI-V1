@@ -276,9 +276,7 @@ def test_cancel_and_refund_instructions_use_rag_without_live_api(
         citation_chunk_ids=["c1"],
         confidence=0.9,
     )
-    with patch(
-        "app.capabilities.support.service.fetch_for_intent"
-    ) as fetch_for_intent:
+    with patch("app.capabilities.support.service.fetch_for_intent") as fetch_for_intent:
         response = ask(
             SupportAskRequest(
                 question="How can I cancel my booking and get a refund?",
@@ -322,10 +320,7 @@ def test_policy_and_booking_status_uses_rag_and_live_api(
     ) as fetch_for_intent:
         response = ask(
             SupportAskRequest(
-                question=(
-                    "What is the cancellation policy and what is the status "
-                    "of my booking?"
-                ),
+                question=("What is the cancellation policy and what is the status of my booking?"),
                 audience=Audience.CUSTOMER,
             ),
             retriever=retriever,
@@ -357,15 +352,10 @@ def test_mixed_request_without_jwt_still_answers_from_rag(
         citation_chunk_ids=["c1"],
         confidence=0.9,
     )
-    with patch(
-        "app.capabilities.support.service.fetch_for_intent"
-    ) as fetch_for_intent:
+    with patch("app.capabilities.support.service.fetch_for_intent") as fetch_for_intent:
         response = ask(
             SupportAskRequest(
-                question=(
-                    "What is the cancellation policy and what is the status "
-                    "of my booking?"
-                ),
+                question=("What is the cancellation policy and what is the status of my booking?"),
                 audience=Audience.CUSTOMER,
             ),
             retriever=retriever,
@@ -405,10 +395,7 @@ def test_mixed_request_api_failure_still_answers_from_rag(
     ):
         response = ask(
             SupportAskRequest(
-                question=(
-                    "What is the cancellation policy and what is the status "
-                    "of my booking?"
-                ),
+                question=("What is the cancellation policy and what is the status of my booking?"),
                 audience=Audience.CUSTOMER,
             ),
             retriever=retriever,
@@ -630,16 +617,15 @@ def test_requested_limit_is_applied_to_packages_and_generation_context(
     assert "Tour 3" not in prompt
     assert "3 packages" in prompt
     assert "Here are 2 to get you started" in prompt
-    assert "Before a result list, add one short, natural lead-in" in (
-        patch_gateway.generate_structured_sync.call_args.kwargs["system"]
+    assert (
+        "Before a result list, add one short, natural lead-in"
+        in (patch_gateway.generate_structured_sync.call_args.kwargs["system"])
     )
     patch_version_ok.assert_not_called()
     retriever.search.assert_not_called()
 
 
-def test_requested_limit_is_applied_to_payment_history(
-    retriever, patch_version_ok, patch_gateway
-):
+def test_requested_limit_is_applied_to_payment_history(retriever, patch_version_ok, patch_gateway):
     payments = [
         {
             "createdAt": f"2026-10-{day:02d}T00:00:00Z",

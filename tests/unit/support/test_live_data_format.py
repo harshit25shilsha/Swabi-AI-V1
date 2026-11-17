@@ -247,3 +247,43 @@ def test_vendor_subscription_present():
     )
     assert "Professional" in text
     assert "active" in text
+
+
+def test_my_enquiry_bids_formats_all_enquiries_summary():
+    text = format_for_intent(
+        LiveDataIntent.MY_ENQUIRY_BIDS,
+        {
+            "scope": "all_customer_enquiries",
+            "total_enquiries": 3,
+            "total_bids": 2,
+            "enquiries_with_bids": [
+                {
+                    "title": "Goa Trip",
+                    "bid_count": 1,
+                },
+                {
+                    "title": "Kashmir Trip",
+                    "bid_count": 1,
+                },
+            ],
+        },
+    )
+
+    assert "2 vendor bids" in text
+    assert "Goa Trip" in text
+    assert "Kashmir Trip" in text
+
+
+def test_my_enquiry_bids_summary_handles_zero_bids():
+    text = format_for_intent(
+        LiveDataIntent.MY_ENQUIRY_BIDS,
+        {
+            "scope": "all_customer_enquiries",
+            "total_enquiries": 3,
+            "total_bids": 0,
+            "enquiries_with_bids": [],
+        },
+    )
+
+    assert "No vendor bids" in text
+    assert "3 enquiries" in text

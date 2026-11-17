@@ -511,64 +511,41 @@ def test_fetch_for_package_search_passes_requested_limit_to_api(monkeypatch):
     assert record[0]["params"] == {"page": 1, "limit": 2, "destination": "Goa"}
 
 
-def test_fetch_latest_enquiry_bids_uses_newest_enquiry(monkeypatch):
+def test_fetch_all_enquiry_bid_counts_without_calling_bid_endpoint(monkeypatch):
     enquiries = [
         {
             "id": "11111111-1111-4111-8111-111111111111",
-            "title": "Older trip",
-            "createdAt": "2026-10-12T10:00:00Z",
+            "title": "Goa Trip",
+            "destination": "Goa",
+            "bidCount": 1,
         },
         {
             "id": "22222222-2222-4222-8222-222222222222",
-            "title": "Newest trip",
-            "createdAt": "2026-10-13T10:00:00Z",
+            "title": "Latest Trip",
+            "destination": "Manali",
+            "bidCount": 0,
+        },
+        {
+            "id": "33333333-3333-4333-8333-333333333333",
+            "title": "Kashmir Trip",
+            "destination": "Kashmir",
+            "bidCount": "2",
         },
     ]
-    requested_ids: list[str] = []
+
     monkeypatch.setattr(
         live_data,
         "fetch_my_enquiries",
-        lambda user_jwt: {"enquiries": enquiries, "total": 2},
+        lambda user_jwt: {
+            "enquiries": enquiries,
+            "total": len(enquiries),
+        },
     )
-
-    def fake_fetch_bids(user_jwt, enquiry_id):
-        requested_ids.append(enquiry_id)
-        return {"bids": [], "total": 0}
 
     monkeypatch.setitem(
         live_data._FETCHERS,
         LiveDataIntent.MY_ENQUIRY_BIDS,
-        fake_fetch_bids,
-    )
-
-    label, payload = live_data.fetch_for_intent(
-        LiveDataIntent.MY_ENQUIRY_BIDS,
-        user_jwt=_jwt(),
-        entities={},
-    )
-
-    assert requested_ids == ["22222222-2222-4222-8222-222222222222"]
-    assert "GET /api/enquiries/my" in label
-    assert payload["enquiry"]["title"] == "Newest trip"
-    assert payload["total"] == 0
-    from app.capabilities.support.live_data_format import format_for_intent
-
-    answer = format_for_intent(LiveDataIntent.MY_ENQUIRY_BIDS, payload)
-    assert "Newest trip" in answer
-    assert "No bids have been received on" in answer
-    assert "any of your enquiries" not in answer
-
-
-def test_fetch_latest_enquiry_bids_handles_no_enquiries(monkeypatch):
-    monkeypatch.setattr(
-        live_data,
-        "fetch_my_enquiries",
-        lambda user_jwt: {"enquiries": [], "total": 0},
-    )
-    monkeypatch.setitem(
-        live_data._FETCHERS,
-        LiveDataIntent.MY_ENQUIRY_BIDS,
-        lambda *_: pytest.fail("bids endpoint should not be called"),
+        lambda *_: pytest.fail("Detailed bid endpoint must not be called for summary questions"),
     )
 
     label, payload = live_data.fetch_for_intent(
@@ -578,7 +555,30 @@ def test_fetch_latest_enquiry_bids_handles_no_enquiries(monkeypatch):
     )
 
     assert label == "GET /api/enquiries/my"
-    assert payload["enquiry"] is None
+    assert payload["total_enquiries"] == 3
+    assert payload["total_bids"] == 3
+    assert len(payload["enquiries_with_bids"]) == 2
+    assert payload["enquiries_with_bids"][0]["title"] == "Goa Trip"
+    assert payload["enquiries_with_bids"][1]["bid_count"] == 2
+
+
+def test_fetch_all_enquiry_bid_counts_handles_no_enquiries(monkeypatch):
+    monkeypatch.setattr(
+        live_data,
+        "fetch_my_enquiries",
+        lambda user_jwt: {"enquiries": [], "total": 0},
+    )
+
+    label, payload = live_data.fetch_for_intent(
+        LiveDataIntent.MY_ENQUIRY_BIDS,
+        user_jwt=_jwt(),
+        entities={},
+    )
+
+    assert label == "GET /api/enquiries/my"
+    assert payload["total_enquiries"] == 0
+    assert payload["total_bids"] == 0
+    assert payload["enquiries_with_bids"] == []
 
 
 @pytest.mark.parametrize(
@@ -610,3 +610,54 @@ def test_fetch_for_intent_normalizes_status_aliases(monkeypatch, intent, status)
 
     expected = "cancelled" if status in {"cancel", "canceled", "cancelled"} else "completed"
     assert record[0]["params"]["status"] == expected
+
+
+def test_named_enquiry_fetches_detailed_bids(monkeypatch):
+    enquiry = {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "title": "Goa Trip",
+        "destination": "Goa",
+        "bidCount": 1,
+    }
+
+    calls = []
+
+    monkeypatch.setattr(
+        live_data,
+        "fetch_my_enquiries",
+        lambda jwt: {"enquiries": [enquiry], "total": 1},
+    )
+
+    def fake_fetch_bids(jwt, enquiry_id):
+        calls.append(enquiry_id)
+        return {
+            "bids": [
+                {
+                    "amount": 25000,
+                    "currency": "INR",
+                    "status": "pending",
+                    "agent": {"companyName": "Goa Travels"},
+                }
+            ],
+            "total": 1,
+        }
+
+    monkeypatch.setitem(
+        live_data._FETCHERS,
+        LiveDataIntent.MY_ENQUIRY_BIDS,
+        fake_fetch_bids,
+    )
+
+    labels, payload = live_data.fetch_for_intent(
+        LiveDataIntent.MY_ENQUIRY_BIDS,
+        user_jwt=_jwt(),
+        entities={"enquiry_query": "Goa"},
+    )
+
+    assert calls == [enquiry["id"]]
+    assert labels == [
+        "GET /api/enquiries/my",
+        "GET /api/bids/enquiry/{enquiryId}",
+    ]
+    assert payload["enquiry"]["title"] == "Goa Trip"
+    assert payload["bids"][0]["agent"]["companyName"] == "Goa Travels"

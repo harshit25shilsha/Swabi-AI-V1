@@ -6,13 +6,13 @@ import hashlib
 
 from fastapi import APIRouter, Request
 
-from app.core.route_auth import require_user_capability
 from app.capabilities.chat_safety.prompts import PROMPT_VERSION
 from app.capabilities.chat_safety.schemas import (
     ModerationRequest,
     ModerationResponse,
 )
 from app.capabilities.chat_safety.service import moderate
+from app.core.route_auth import require_user_capability
 
 router = APIRouter(prefix="/api/v1", tags=["chat_safety"])
 

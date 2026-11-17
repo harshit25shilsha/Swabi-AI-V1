@@ -183,17 +183,9 @@ def _apply_date_guard(message: str, extraction: EnquiryExtraction) -> None:
 
 
 def _has_date_window(extraction: EnquiryExtraction) -> bool:
-    note = (
-        extraction.date_flexibility.note
-        if extraction.date_flexibility is not None
-        else None
-    )
+    note = extraction.date_flexibility.note if extraction.date_flexibility is not None else None
     return bool(
-        note
-        and (
-            _BROAD_DATE_PATTERN.search(note)
-            or _EXPLICIT_DATE_RANGE_PATTERN.search(note)
-        )
+        note and (_BROAD_DATE_PATTERN.search(note) or _EXPLICIT_DATE_RANGE_PATTERN.search(note))
     )
 
 
@@ -241,9 +233,7 @@ def _preserve_named_stops(message: str, extraction: EnquiryExtraction) -> None:
 
     if extraction.adults is not None and extraction.children:
         ages = [str(child.age) for child in extraction.children if child.age is not None]
-        composition = (
-            f"{extraction.adults} adults and {len(extraction.children)} children"
-        )
+        composition = f"{extraction.adults} adults and {len(extraction.children)} children"
         if ages:
             composition += f" (ages {', '.join(ages)})"
         if composition.casefold() not in summary.casefold():
@@ -316,9 +306,7 @@ def _apply_semantic_preservation(message: str, extraction: EnquiryExtraction) ->
         comfort = "comfortable " if re.search(r"\bcomfortable\b", normalized) else ""
         mountain = "Mountain " if re.search(r"\bmountain\b", normalized) else ""
         separator = " or " if re.search(r"\bor\b", normalized) else " and "
-        req.accommodation = (
-            f"{hotel_rating}Hotel{separator}{comfort}{mountain}Resort"
-        )
+        req.accommodation = f"{hotel_rating}Hotel{separator}{comfort}{mountain}Resort"
         extraction.property_type = (
             PropertyType.HOTEL_RESORT_AND_HOUSEBOAT.value
             if has_houseboat
@@ -332,9 +320,7 @@ def _apply_semantic_preservation(message: str, extraction: EnquiryExtraction) ->
         rating = f"{rating_text} " if rating_text else ""
         req.accommodation = f"{luxury}{rating}Resort"
         extraction.property_type = (
-            PropertyType.RESORT_AND_HOUSEBOAT.value
-            if has_houseboat
-            else PropertyType.RESORT.value
+            PropertyType.RESORT_AND_HOUSEBOAT.value if has_houseboat else PropertyType.RESORT.value
         )
         for rating_value in ratings:
             _append_unique(extraction.tags, f"{rating_value}-star")

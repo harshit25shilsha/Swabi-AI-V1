@@ -1,4 +1,3 @@
-
 """Per-request observability for chat safety and support APIs."""
 
 from __future__ import annotations
@@ -98,9 +97,7 @@ class ObservabilityMiddleware:
                 counters.increment("blocks_total")
 
                 if result.category is not None:
-                    counters.increment(
-                        f"blocks_by_category:{result.category.value}"
-                    )
+                    counters.increment(f"blocks_by_category:{result.category.value}")
             else:
                 counters.increment("allows_total")
 
@@ -110,9 +107,7 @@ class ObservabilityMiddleware:
                     "event": "moderation",
                     "request_id": request_id,
                     "action": result.action.value,
-                    "category": (
-                        result.category.value if result.category else None
-                    ),
+                    "category": (result.category.value if result.category else None),
                     "confidence": result.confidence,
                     "source": result.source,
                     "latency_ms": round(elapsed_ms, 2),

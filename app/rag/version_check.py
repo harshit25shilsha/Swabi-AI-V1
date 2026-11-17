@@ -1,4 +1,3 @@
-
 """Verify Qdrant version authority with process-local validation caching.
 
 The local CURRENT file is checked on every request. A successful Qdrant
@@ -97,10 +96,7 @@ def check_version_authority(
                 ok=False,
                 local_version=local_version,
                 alias_collection=alias_collection,
-                reason=(
-                    f"alias={alias_collection!r} "
-                    f"does not match expected={expected!r}"
-                ),
+                reason=(f"alias={alias_collection!r} does not match expected={expected!r}"),
             )
 
         status = VersionStatus(
@@ -110,11 +106,7 @@ def check_version_authority(
         )
 
         # Keep only the latest validated version for this store/path.
-        old_keys = [
-            key
-            for key in _validated_versions
-            if key[:2] == cache_base
-        ]
+        old_keys = [key for key in _validated_versions if key[:2] == cache_base]
 
         for key in old_keys:
             _validated_versions.pop(key, None)

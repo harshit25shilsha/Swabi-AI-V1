@@ -225,12 +225,8 @@ def test_platform_overview_answer_cites_only_the_direct_overview_chunk(
 
     assert response.answer_type == AnswerType.ANSWERED
     assert [citation.chunk_id for citation in response.citations] == ["overview"]
-    assert retriever.search.call_args.args[0].startswith(
-        "Swabi platform overview and purpose"
-    )
-    assert "what is Swabi?" in patch_gateway.generate_structured_sync.call_args.kwargs[
-        "prompt"
-    ]
+    assert retriever.search.call_args.args[0].startswith("Swabi platform overview and purpose")
+    assert "what is Swabi?" in patch_gateway.generate_structured_sync.call_args.kwargs["prompt"]
 
 
 def test_answered_but_bad_citation_downgrades(retriever, patch_version_ok, gateway):

@@ -118,11 +118,9 @@ class Settings(BaseSettings):
     swabi_response_kdf: str = "md5"  # "md5" (CryptoJS default) or "sha256"
 
     @model_validator(mode="after")
-    def _require_gateway_secret(self) -> "Settings":
+    def _require_gateway_secret(self) -> Settings:
         if self.ai_auth_mode == "gateway" and not self.ai_gateway_auth_secret:
-            raise ValueError(
-                "AI_GATEWAY_AUTH_SECRET is required when AI_AUTH_MODE=gateway"
-            )
+            raise ValueError("AI_GATEWAY_AUTH_SECRET is required when AI_AUTH_MODE=gateway")
         return self
 
     @property
