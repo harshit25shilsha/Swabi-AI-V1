@@ -279,9 +279,14 @@ user mentions them and are dormant otherwise.
 - **Explicit dates** (`"15/12/26"`) are returned as `dd/mm/yy`.
 - **Ordinal weekdays** (`"first Saturday of December"`, `"next Monday"`)
   are resolved using the current date as reference.
-- `travel_date_end` is extracted when the user gives a range, or derived
-  from `travel_date + duration_days - 1`.
-
+- `travel_date_end` is extracted only when the user explicitly provides
+  an end date or a resolvable date range.
+- Duration alone never generates an end date.
+- When an explicit start/end range is present and duration is absent,
+  duration can be derived from that range.
+- Broad periods such as "late December" remain in
+  `date_flexibility.note`.
+  
 ### Canonical activities
 
 The ten known activities are matched by name:
@@ -310,14 +315,32 @@ Custom activities are returned as free strings (e.g. "Fly fishing").
 
 ### Missing-field detection
 
-Deterministic, in the order the frontend validates. Required fields first
-(destination, when, travelers, accommodation, transport, meals, tour_guide,
-activities, special_instructions, description), then askable fields
-(budget, duration, travel_date). `when` is satisfied by any of
-`travel_date`, `duration_days`, or `duration_nights`.
+Missing fields are calculated deterministically.
 
-Clarifying questions are generated for missing fields, capped at
-`MAX_CLARIFYING_QUESTIONS = 4`.
+**Required fields:**
+- `destination`
+- `when` — satisfied by an exact travel date, a date range,
+  a recognized broad date window, or a trip duration
+- `travelers`
+
+**Recommended fields:**
+- `budget`
+- `accommodation`
+- `transport`
+- `duration`
+- `travel_date`
+
+Meals, tour guide, activities, special instructions and description
+are optional. They are not requested unless relevant to the user's
+message or the current extraction flow.
+
+Clarifying questions prioritize missing required fields. Recommended
+questions are asked only after the required trip information is known.
+Questions are capped at `MAX_CLARIFYING_QUESTIONS = 4`.
+
+`completeness` measures required-field coverage, not extraction accuracy.
+A value of `1.0` means all three required fields are present. It does
+not mean every recommended preference has been extracted.
 
 ### Scope
 

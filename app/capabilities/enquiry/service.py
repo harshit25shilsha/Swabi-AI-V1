@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import date
+from datetime import date, datetime
 
 from app.capabilities.enquiry.constants import (
     FIELD_ACCOMMODATION,
@@ -41,6 +41,7 @@ from app.capabilities.enquiry.prompts import (
 from app.capabilities.enquiry.schemas import (
     ClarificationQuestion,
     DateFlexibility,
+    EnquiryBudget,
     EnquiryExtraction,
     EnquiryUnderstandResponse,
 )
@@ -139,17 +140,109 @@ _QUESTION_TEMPLATES: dict[str, str] = {
 }
 
 
+def _parse_extracted_date(value: str | None) -> date | None:
+    """Parse supported model date formats into the API's date representation."""
+    if not value:
+        return None
+
+    for fmt in (
+        "%d/%m/%y",
+        "%d/%m/%Y",
+        "%Y-%m-%d",
+        "%d-%m-%Y",
+        "%d-%m-%y",
+        "%d %B %Y",
+        "%d %b %Y",
+    ):
+        try:
+            return datetime.strptime(value.strip(), fmt).date()
+        except ValueError:
+            continue
+
+    return None
+
+
+def _validate_date_values(extraction: EnquiryExtraction) -> None:
+    """Reject malformed dates and impossible date ordering."""
+    start = _parse_extracted_date(extraction.travel_date)
+    end = _parse_extracted_date(extraction.travel_date_end)
+
+    if extraction.travel_date and start is None:
+        extraction.travel_date = None
+    elif start:
+        extraction.travel_date = start.strftime("%d/%m/%y")
+
+    if extraction.travel_date_end and end is None:
+        extraction.travel_date_end = None
+    elif end:
+        extraction.travel_date_end = end.strftime("%d/%m/%y")
+
+    if start and end and end < start:
+        extraction.travel_date = None
+        extraction.travel_date_end = None
+        return
+
+    # A date range is explicit trip information. Derive duration only
+    # when the user/model has not already supplied a duration.
+    if start and end:
+        range_days = (end - start).days + 1
+        range_nights = (end - start).days
+
+        if extraction.duration_days is None:
+            extraction.duration_days = range_days
+
+        if extraction.duration_nights is None:
+            extraction.duration_nights = range_nights
+
+
+def _build_enquiry_title(extraction: EnquiryExtraction) -> str:
+    """Build a short, consistent title from extracted trip information."""
+    destination = (extraction.destination or "").strip()
+    trip_type = (extraction.trip_type or "").strip().casefold()
+
+    trip_labels = {
+        "honeymoon": "honeymoon",
+        "romantic": "romantic",
+        "family": "family",
+        "adventure": "adventure",
+        "business": "business",
+        "friends": "friends",
+    }
+
+    descriptor = trip_labels.get(trip_type)
+
+    if extraction.duration_days:
+        duration = f"{extraction.duration_days}-Day"
+    elif extraction.duration_nights:
+        duration = f"{extraction.duration_nights}-Night"
+    else:
+        duration = None
+
+    parts = [part for part in (duration, descriptor) if part]
+
+    if destination:
+        if parts:
+            # ``str.capitalize`` lowercases every following character, which
+            # makes titles such as ``6-day honeymoon`` inconsistent. Capitalize
+            # only the leading duration/descriptor instead.
+            title_prefix = " ".join(parts)
+            return f"{title_prefix[:1].upper()}{title_prefix[1:]} trip to {destination}"
+        return f"Trip to {destination}"
+
+    if parts:
+        return f"{' '.join(parts).capitalize()} trip"
+
+    return "Travel enquiry"
+
+
 # Missing field detection — deterministic
 
 
 def _apply_date_guard(message: str, extraction: EnquiryExtraction) -> None:
-    """Reject exact dates unsupported by the user's wording.
-
-    Relative calendar expressions are left to the prompt's reference-date
-    instructions; broad periods are retained as date-flexibility notes.
-    """
+    """Keep only dates supported by the user's message."""
     date_expressions = list(_EXPLICIT_DATE_PATTERN.finditer(message))
     weekend = _WEEKEND_PATTERN.search(message) is not None
+
     has_date_range = (
         len(date_expressions) > 1
         or weekend
@@ -160,6 +253,7 @@ def _apply_date_guard(message: str, extraction: EnquiryExtraction) -> None:
     if not date_expressions:
         extraction.travel_date = None
         extraction.travel_date_end = None
+
         broad_period = _BROAD_DATE_PATTERN.search(message)
         if broad_period is None:
             if extraction.date_flexibility is not None:
@@ -178,8 +272,11 @@ def _apply_date_guard(message: str, extraction: EnquiryExtraction) -> None:
             flexibility.note = broad_period.group().strip()
         return
 
+    # A single start date must never produce an invented end date.
     if not has_date_range:
         extraction.travel_date_end = None
+
+    _validate_date_values(extraction)
 
 
 def _has_date_window(extraction: EnquiryExtraction) -> bool:
@@ -216,18 +313,96 @@ def _append_special_request(current: str, detail: str) -> str:
     return f"{current}; {detail}".strip("; ")
 
 
-def _preserve_named_stops(message: str, extraction: EnquiryExtraction) -> None:
-    match = re.search(
+def _normalize_special_requests(value: str) -> str | None:
+    """Remove malformed and equivalent request details from model output."""
+    normalized: list[str] = []
+    seen: set[str] = set()
+
+    for raw_detail in value.split(";"):
+        detail = re.sub(r"\s+", " ", raw_detail).strip(" ,.")
+        room_and_preference = re.match(
+            r"^((?:\d+|one|two|three|four|five|six|seven|eight|nine|ten) "
+            r"(?:family )?rooms?),\s*(.+)$",
+            detail,
+            re.IGNORECASE,
+        )
+        details = list(room_and_preference.groups()) if room_and_preference else [detail]
+
+        for detail in details:
+            is_invalid_dropoff = re.match(
+                r"^drop-off at (?:visit|explore|see|tour)\b",
+                detail,
+                re.IGNORECASE,
+            )
+            if not detail or is_invalid_dropoff:
+                continue
+
+            pickup = re.match(r"^pick(?:up)?\s+(?:at|from)\s+(.+)$", detail, re.IGNORECASE)
+            sightseeing = re.match(
+                r"^(?:explore|visiting|sightseeing in)\s+(.+)$",
+                detail,
+                re.IGNORECASE,
+            )
+            if pickup:
+                location = pickup.group(1).strip()
+                detail = f"Pickup from {location}"
+                key = f"pickup:{location.casefold()}"
+            elif sightseeing:
+                stops = sightseeing.group(1).strip()
+                detail = f"Sightseeing in {stops}"
+                key = f"sightseeing:{stops.casefold()}"
+            else:
+                key = detail.casefold()
+
+            if key not in seen:
+                seen.add(key)
+                normalized.append(detail)
+
+    room_only = [
+        detail
+        for detail in normalized
+        if re.fullmatch(
+            r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten) "
+            r"(?:family )?rooms?",
+            detail,
+            re.IGNORECASE,
+        )
+    ]
+    if room_only:
+        normalized = [
+            detail
+            for detail in normalized
+            if not any(
+                detail.casefold().startswith(f"{room.casefold()} in ")
+                for room in room_only
+            )
+        ]
+
+    return "; ".join(normalized) or None
+
+
+def _requested_stops(message: str) -> str | None:
+    """Return explicitly named sightseeing stops without transport wording."""
+    matches = list(re.finditer(
         r"\b(?:visit|explore|see|tour)\s+(.+?)"
-        r"(?=[.;!?]|,\s*(?:and\s+)?(?:activities|experiences|we|please|enjoy)\b|"
+        r"(?=\s+(?:from|with|using|by)\s+(?:\d|private|local|airport)\b|"
+        r"[.;!?]|,\s*(?:and\s+)?(?:activities|experiences|we|please|enjoy)\b|"
         r"\s+(?:and\s+)?(?:enjoy|activities|experiences|we|please|need|prefer)\b|$)",
         message,
         re.IGNORECASE,
-    )
+    ))
+    if not matches:
+        return None
+    match = matches[-1]
+    stops = match.group(1).strip(" ,")
+    return stops or None
+
+
+def _preserve_named_stops(message: str, extraction: EnquiryExtraction) -> None:
     summary = extraction.description or f"Trip to {extraction.destination or 'the destination'}"
     details: list[str] = []
-    if match:
-        stops = match.group(1).strip(" ,")
+    stops = _requested_stops(message)
+    if stops:
         if stops and stops.casefold() not in summary.casefold():
             details.append(f"visiting {stops}")
 
@@ -265,7 +440,9 @@ def _transport_location_details(message: str) -> list[str]:
         if pickup:
             details.append(f"Pickup from {pickup.group(1).strip()}")
         if dropoff:
-            details.append(f"Drop-off at {dropoff.group(1).strip()}")
+            location = dropoff.group(1).strip()
+            if not re.match(r"(?:visit|explore|see|tour)\b", location, re.IGNORECASE):
+                details.append(f"Drop-off at {location}")
     return details
 
 
@@ -301,39 +478,83 @@ def _apply_semantic_preservation(message: str, extraction: EnquiryExtraction) ->
             _append_unique(extraction.tags, descriptor)
 
     ratings = list(dict.fromkeys(_STAR_RATING_PATTERN.findall(message)))
+
     if has_hotel and has_resort:
-        hotel_rating = f"{ratings[0]}-star " if ratings else ""
-        comfort = "comfortable " if re.search(r"\bcomfortable\b", normalized) else ""
-        mountain = "Mountain " if re.search(r"\bmountain\b", normalized) else ""
-        separator = " or " if re.search(r"\bor\b", normalized) else " and "
-        req.accommodation = f"{hotel_rating}Hotel{separator}{comfort}{mountain}Resort"
+        hotel_rating_match = re.search(
+            r"\b([3-5])\s*[- ]?star\s+hotels?\b",
+            message,
+            re.IGNORECASE,
+        )
+        resort_rating_match = re.search(
+            r"\b([3-5])\s*[- ]?star\s+resorts?\b",
+            message,
+            re.IGNORECASE,
+        )
+
+        hotel_label = (
+            f"{hotel_rating_match.group(1)}-star Hotel"
+            if hotel_rating_match
+            else "Hotel"
+        )
+
+        resort_label = (
+            f"{resort_rating_match.group(1)}-star Resort"
+            if resort_rating_match
+            else "Resort"
+        )
+
+        if not resort_rating_match and ratings and not hotel_rating_match:
+            resort_label = " or ".join(f"{rating}-star" for rating in ratings) + " Resort"
+
+        if re.search(r"\bluxury\b", normalized):
+            resort_label = f"Luxury {resort_label}"
+
+        if re.search(r"\bcomfortable\b", normalized):
+            resort_label = f"comfortable {resort_label}"
+
+        if re.search(r"\bmountain\b", normalized):
+            resort_label = resort_label.replace("Resort", "Mountain Resort")
+            _append_unique(extraction.tags, "mountain")
+
+        separator = (
+            " or "
+            if re.search(r"\bor\b", normalized)
+            else " and "
+        )
+
+        req.accommodation = f"{hotel_label}{separator}{resort_label}"
+
         extraction.property_type = (
             PropertyType.HOTEL_RESORT_AND_HOUSEBOAT.value
             if has_houseboat
             else PropertyType.HOTEL_AND_RESORT.value
         )
-        if re.search(r"\bmountain\b", normalized):
-            _append_unique(extraction.tags, "mountain")
+
     elif has_resort:
         rating_text = " or ".join(f"{rating}-star" for rating in ratings)
         luxury = "Luxury " if re.search(r"\bluxury\b", normalized) else ""
-        rating = f"{rating_text} " if rating_text else ""
-        req.accommodation = f"{luxury}{rating}Resort"
+        req.accommodation = f"{luxury}{rating_text + ' ' if rating_text else ''}Resort"
+
         extraction.property_type = (
-            PropertyType.RESORT_AND_HOUSEBOAT.value if has_houseboat else PropertyType.RESORT.value
+            PropertyType.RESORT_AND_HOUSEBOAT.value
+            if has_houseboat
+            else PropertyType.RESORT.value
         )
-        for rating_value in ratings:
-            _append_unique(extraction.tags, f"{rating_value}-star")
+
     elif has_hotel:
         rating_text = " or ".join(f"{rating}-star" for rating in ratings)
         req.accommodation = f"{rating_text + ' ' if rating_text else ''}Hotel"
-        extraction.property_type = "hotel"
-        for rating_value in ratings:
-            _append_unique(extraction.tags, f"{rating_value}-star")
+        extraction.property_type = PropertyType.HOTEL.value
+
     elif has_houseboat:
         if not req.accommodation or "houseboat" in req.accommodation.casefold():
             req.accommodation = "Houseboat"
         extraction.property_type = PropertyType.HOUSEBOAT.value
+
+    for rating in ratings:
+        _append_unique(extraction.tags, f"{rating}-star")
+
+
 
     if has_houseboat:
         _append_unique(req.activities, "Houseboat Stay")
@@ -369,19 +590,42 @@ def _apply_semantic_preservation(message: str, extraction: EnquiryExtraction) ->
         re.IGNORECASE,
     ):
         req.transport = Transport.PRIVATE_TEMPO_TRAVELLER.value
+    elif re.search(r"\bairport\s+transfers?\b", message, re.IGNORECASE):
+        req.transport = "Airport Transfers"
+    elif re.search(r"\bprivate\s+transport(?:ation)?\b", message, re.IGNORECASE):
+        req.transport = "Private Transportation"
+    elif re.search(r"\blocal\s+transport(?:ation)?\b", message, re.IGNORECASE):
+        req.transport = "Local Transportation"
+
+    # A specific photography request subsumes the generic activity. Keep one
+    # canonical entry while retaining the more useful detail.
+    if any(activity.casefold() == "couple photography" for activity in req.activities):
+        req.activities = [
+            activity for activity in req.activities if activity.casefold() != "photography"
+        ]
+
+    unique_activities: list[str] = []
+    for activity in req.activities:
+        _append_unique(unique_activities, activity)
+    req.activities = unique_activities
 
     room_match = _ROOM_COUNT_PATTERN.search(message)
     if room_match:
         count = room_match.group("count").casefold()
         extraction.rooms = int(count) if count.isdigit() else _NUMBER_WORDS[count]
-        room_detail = re.match(
-            r"[^.;!?]+",
-            message[room_match.start() :],
-        )
-        if room_detail:
-            special_detail = room_detail.group().strip(" ,")
-        else:
-            special_detail = ""
+        room_detail = re.match(r"[^.;!?]+", message[room_match.start() :])
+        special_detail = room_detail.group().strip(" ,") if room_detail else room_match.group()
+        # Keep room-specific qualifiers (for example, mountain views), but do
+        # not repeat accommodation, meals, or transport already structured.
+        special_detail = re.split(
+            r"\s+in\s+(?:a|an|the)\s+(?:\d+-star\s+)?(?:hotel|resort)\b"
+            r"|\s+(?:with\s+)?(?:breakfast|lunch|dinner|all meals)\b"
+            r"|\s+and\s+(?:a\s+)?private\s+"
+            r"(?:cab|taxi|suv|tempo\s+traveller|transport(?:ation)?)\b",
+            special_detail,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0].strip(" ,")
     else:
         special_detail = ""
 
@@ -390,6 +634,12 @@ def _apply_semantic_preservation(message: str, extraction: EnquiryExtraction) ->
             extraction.duration_nights = extraction.duration_days - 1
 
     special_requests = req.special_requests or ""
+    stops = _requested_stops(message)
+    if stops:
+        special_requests = _append_special_request(
+            special_requests,
+            f"Sightseeing in {stops}",
+        )
     for activity_pattern, _ in requested_activities:
         special_requests = re.sub(activity_pattern, "", special_requests, flags=re.IGNORECASE)
     special_requests = re.sub(
@@ -409,21 +659,52 @@ def _apply_semantic_preservation(message: str, extraction: EnquiryExtraction) ->
     special_requests = special_requests.strip(" ,;.")
 
     if has_houseboat:
-        if re.search(r"\bprivate\b", normalized) and re.search(
-            r"\b(?:one|1)\s+nights?\b", normalized
-        ):
+        houseboat_context = next(
+            (
+                sentence
+                for sentence in re.split(r"(?<=[.!?;])\s+", message)
+                if re.search(r"\bhouse\s*boats?\b", sentence, re.IGNORECASE)
+            ),
+            "",
+        )
+
+        private_houseboat = bool(
+            re.search(
+                r"\bprivate\s+(?:\w+\s+){0,2}house\s*boats?\b"
+                r"|\bhouse\s*boats?\b[^.;!?]{0,40}\bprivate\b",
+                houseboat_context,
+                re.IGNORECASE,
+            )
+        )
+
+        one_night_houseboat = bool(
+            re.search(
+                r"\b(?:one|1)\s+nights?\b[^.;!?]{0,35}\bhouse\s*boats?\b"
+                r"|\bhouse\s*boats?\b[^.;!?]{0,35}\b(?:one|1)\s+nights?\b",
+                houseboat_context,
+                re.IGNORECASE,
+            )
+        )
+
+        if private_houseboat and one_night_houseboat:
             detail = "Private houseboat stay for one night"
-        elif re.search(r"\bprivate\b", normalized):
+        elif private_houseboat:
             detail = "Private houseboat stay"
-        elif re.search(r"\b(?:one|1)\s+nights?\b", normalized):
+        elif one_night_houseboat:
             detail = "Houseboat stay for one night"
         else:
             detail = ""
-        if detail and detail.casefold() not in special_requests.casefold():
+
+        if detail:
             special_requests = _append_special_request(special_requests, detail)
 
+
+
     if special_detail:
-        special_requests = _append_special_request(special_requests, special_detail)
+        # Keep a concise room request even when the model supplied a longer
+        # sentence containing the same room count. Normalization below drops
+        # the redundant sentence.
+        special_requests = f"{special_requests}; {special_detail}".strip("; ")
 
     for detail in _transport_location_details(message):
         special_requests = _append_special_request(special_requests, detail)
@@ -439,7 +720,142 @@ def _apply_semantic_preservation(message: str, extraction: EnquiryExtraction) ->
         if match and not re.search(pattern, special_requests, re.IGNORECASE):
             special_requests = f"{special_requests}; {match.group().strip()}".strip("; ")
 
-    req.special_requests = special_requests or None
+    req.special_requests = _normalize_special_requests(special_requests)
+
+_MONEY_TOKEN = (
+    r"(?:₹\s*)?"
+    r"(?P<amount>\d+(?:,\d{3})*(?:\.\d+)?)"
+    r"\s*(?P<scale>k|thousand|lakh|lac)?"
+)
+
+
+def _money_value(match: re.Match[str]) -> float:
+    amount = float(match.group("amount").replace(",", ""))
+    scale = (match.group("scale") or "").casefold()
+
+    if scale in {"k", "thousand"}:
+        amount *= 1_000
+    elif scale in {"lakh", "lac"}:
+        amount *= 100_000
+
+    return amount
+
+def _apply_budget_fallback(
+    message: str,
+    extraction: EnquiryExtraction,
+) -> None:
+    """Recover an explicit budget when the structured model omitted it.
+
+    Never overwrite an amount already extracted by the model.
+    """
+    budget_match = re.search(
+        r"\bbudget\b[^.;!?]{0,180}",
+        message,
+        re.IGNORECASE,
+    )
+    if budget_match is None:
+        return
+
+    context = budget_match.group()
+    amounts = list(re.finditer(_MONEY_TOKEN, context, re.IGNORECASE))
+
+    if not amounts:
+        return
+
+    currency = None
+
+    if re.search(
+        r"\bINR\b|₹|\brupees?\b|\bRs\.?\b",
+        context,
+        re.IGNORECASE,
+    ):
+        currency = "INR"
+    elif re.search(r"\bGBP\b|£", context, re.IGNORECASE):
+        currency = "GBP"
+    elif re.search(r"\bUSD\b|\$", context, re.IGNORECASE):
+        currency = "USD"
+    elif re.search(r"\bEUR\b|€", context, re.IGNORECASE):
+        currency = "EUR"
+
+    is_per_person = None
+
+    if re.search(r"\bper\s+person\b|\beach\b", context, re.IGNORECASE):
+        is_per_person = True
+    elif re.search(
+        r"\btotal\b|\bfor\s+both\s+of\s+us\b|\bwhole\s+group\b"
+        r"|\bentire\s+group\b|\bfor\s+all\s+of\s+us\b",
+        context,
+        re.IGNORECASE,
+    ):
+        is_per_person = False
+
+    # Detect ranges without embedding _MONEY_TOKEN into another regex.
+    # This avoids duplicate named-group errors if _MONEY_TOKEN defines
+    # a named group such as (?P<amount>...).
+    range_values = None
+
+    for first, second in zip(amounts, amounts[1:], strict=False):
+        connector = context[first.end():second.start()]
+
+        if re.fullmatch(
+            r"\s*(?:and|to|[-–—])\s*",
+            connector,
+            re.IGNORECASE,
+        ):
+            range_values = (
+                _money_value(first),
+                _money_value(second),
+            )
+            break
+
+    if range_values is not None:
+        if (
+            extraction.budget_range_min is None
+            or extraction.budget_range_max is None
+        ):
+            extraction.budget_range_min = min(range_values)
+            extraction.budget_range_max = max(range_values)
+
+        if extraction.budget is None:
+            extraction.budget = EnquiryBudget(
+                currency=currency,
+                is_per_person=is_per_person,
+            )
+        else:
+            if extraction.budget.currency is None:
+                extraction.budget.currency = currency
+
+            if extraction.budget.is_per_person is None:
+                extraction.budget.is_per_person = is_per_person
+
+        return
+
+    # Preserve an amount already extracted by the LLM.
+    if extraction.budget is not None and extraction.budget.amount is not None:
+        return
+
+    amount = _money_value(amounts[0])
+
+    if extraction.budget is None:
+        extraction.budget = EnquiryBudget(
+            amount=amount,
+            currency=currency,
+            is_per_person=is_per_person,
+        )
+    else:
+        extraction.budget.amount = amount
+        extraction.budget.currency = extraction.budget.currency or currency
+
+        if extraction.budget.is_per_person is None:
+            extraction.budget.is_per_person = is_per_person
+
+
+def _apply_traveler_consistency(extraction: EnquiryExtraction) -> None:
+    """Keep traveller totals consistent, defaulting unspecified people to adults."""
+    if extraction.adults is None and extraction.travelers is not None and not extraction.children:
+        extraction.adults = extraction.travelers
+    elif extraction.adults is not None:
+        extraction.travelers = extraction.adults + len(extraction.children)
 
 
 def detect_missing_fields(extraction: EnquiryExtraction) -> list[str]:
@@ -466,7 +882,15 @@ def detect_missing_fields(extraction: EnquiryExtraction) -> list[str]:
     if extraction.travelers is None:
         missing.append(FIELD_TRAVELERS)
 
-    if extraction.budget is None or extraction.budget.amount is None:
+    has_budget = (
+        extraction.budget is not None
+        and extraction.budget.amount is not None
+    ) or (
+        extraction.budget_range_min is not None
+        and extraction.budget_range_max is not None
+    )
+
+    if not has_budget:
         missing.append(FIELD_BUDGET)
 
     if not req.accommodation:
@@ -565,7 +989,14 @@ def understand(
     _apply_date_guard(message, extraction)
     _apply_flexibility_window(message, extraction)
     _apply_semantic_preservation(message, extraction)
+    _apply_budget_fallback(message, extraction)
+    _apply_traveler_consistency(extraction)
     _apply_currency_hint(extraction, currency_hint)
+
+    # Always use a deterministic title instead of trusting inconsistent
+    # free-form LLM title generation.
+    extraction.title = _build_enquiry_title(extraction)
+
 
     missing = detect_missing_fields(extraction)
     questions = generate_clarifying_questions(missing)

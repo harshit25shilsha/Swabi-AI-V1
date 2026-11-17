@@ -208,3 +208,13 @@ def test_clarification_question_shape():
     q = ClarificationQuestion(field="rooms", question="How many rooms?")
     assert q.field == "rooms"
     assert q.question == "How many rooms?"
+
+def test_request_rejects_whitespace_only_message():
+    with pytest.raises(ValidationError):
+        EnquiryExtractRequest(message="   \n\t  ")
+
+
+def test_request_trims_message_whitespace():
+    request = EnquiryExtractRequest(message="  Trip to Goa  ")
+    assert request.message == "Trip to Goa"
+    

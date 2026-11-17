@@ -11,7 +11,7 @@ never fabricated defaults.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # Sub-objects
 
@@ -97,9 +97,17 @@ class EnquiryExtraction(BaseModel):
 class EnquiryExtractRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=4000)
 
-    # Optional hints from NestJS. Not required for extraction.
     user_id: str | None = None
     currency_hint: str | None = None
+
+    @field_validator("message", mode="before")
+    @classmethod
+    def validate_message_not_blank(cls, value: object) -> object:
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                raise ValueError("message must not be blank")
+        return value
 
 
 # API - Response
