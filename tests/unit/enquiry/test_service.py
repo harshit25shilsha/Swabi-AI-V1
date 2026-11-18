@@ -11,13 +11,19 @@ from app.capabilities.enquiry.constants import (
     FIELD_ACCOMMODATION,
     FIELD_DESTINATION,
 )
-from app.capabilities.enquiry.prompts import ENQUIRY_PROMPT_VERSION
+from app.capabilities.enquiry.prompts import (
+    ENQUIRY_PROMPT_VERSION,
+    ENQUIRY_SYSTEM_PROMPT,
+)
 from app.capabilities.enquiry.schemas import (
     DateFlexibility,
     EnquiryBudget,
     EnquiryExtraction,
+    EnquiryExtractRequest,
     EnquiryRequirements,
 )
+from app.llm.gateway import _build_structured_prompt
+from app.llm.groq import GroqProvider, _estimate_request_tokens
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -97,6 +103,23 @@ def test_understand_sets_prompt_version(patch_gateway):
 def test_understand_sets_provider(patch_gateway):
     r = svc.understand("test message")
     assert r.provider == "groq"
+
+
+def test_maximum_enquiry_message_fits_active_groq_budget():
+    system = ENQUIRY_SYSTEM_PROMPT.replace("{reference_date}", "17/11/2026")
+    max_message_length = EnquiryExtractRequest.model_json_schema()[
+        "properties"
+    ]["message"]["maxLength"]
+    prompt = _build_structured_prompt("x" * max_message_length, EnquiryExtraction)
+    payload = GroqProvider()._build_payload(
+        prompt,
+        system,
+        temperature=0.0,
+        json_mode=True,
+        extra={},
+    )
+
+    assert _estimate_request_tokens(payload) <= 6000
 
 
 # ---------------------------------------------------------------------------

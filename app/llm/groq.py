@@ -40,6 +40,10 @@ GROQ_CHAT_URL = settings.groq_chat_url
 # HTTP statuses worth retrying
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
+# GPT-OSS can reject constrained JSON after spending tokens; the prompt still
+# supplies the schema and the gateway validates the returned JSON.
+_JSON_MODE_FALLBACK_MODELS = frozenset({"openai/gpt-oss-120b"})
+
 # Initial retry delay for network errors and non-rate-limit transient errors.
 _INITIAL_RETRY_DELAY = 0.2
 _RETRY_JITTER_MAX_SECONDS = 0.5
@@ -228,6 +232,9 @@ class GroqProvider:
         payload.update(extra)
         return payload
 
+    def _effective_json_mode(self, json_mode: bool) -> bool:
+        return json_mode and self.model not in _JSON_MODE_FALLBACK_MODELS
+
     def _headers(self) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {self.api_key}",
@@ -276,6 +283,7 @@ class GroqProvider:
         json_mode: bool = False,
         **extra: object,
     ) -> LLMResponse:
+        json_mode = self._effective_json_mode(json_mode)
         payload = self._build_payload(prompt, system, temperature, json_mode, extra)
 
         attempt = 0
@@ -385,6 +393,7 @@ class GroqProvider:
     ) -> LLMResponse:
         """Synchronous Groq generation with per-stage latency logging."""
 
+        json_mode = self._effective_json_mode(json_mode)
         payload = self._build_payload(
             prompt,
             system,

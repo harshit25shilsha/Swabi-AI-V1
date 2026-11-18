@@ -61,11 +61,42 @@ def test_sync_request_uses_provider_timeout():
     _, kwargs = client.post.call_args
     assert kwargs["timeout"] == 17
     assert kwargs["json"]["max_tokens"] == settings.llm_max_tokens
+    assert kwargs["json"]["response_format"] == {"type": "json_object"}
     limiter.reconcile_reservation.assert_called_once_with(
         "reservation",
         limiter.wait_for_capacity.call_args.args[0],
         4,
     )
+
+
+def test_gpt_oss_skips_constrained_json_mode_retry():
+    provider = GroqProvider(
+        api_key="test-key",
+        model="openai/gpt-oss-120b",
+        max_retries=0,
+    )
+    fake_resp = MagicMock(spec=httpx.Response)
+    fake_resp.status_code = 200
+    fake_resp.headers = {}
+    fake_resp.text = ""
+    fake_resp.json.return_value = {
+        "choices": [{"message": {"content": '{"name":"Swabi","age":1}'}}],
+        "usage": {"prompt_tokens": 2, "completion_tokens": 2, "total_tokens": 4},
+        "model": "openai/gpt-oss-120b",
+    }
+
+    with patch("app.llm.groq._get_sync_client") as get_client:
+        client = MagicMock()
+        client.post.return_value = fake_resp
+        get_client.return_value = client
+        limiter = MagicMock()
+        limiter.wait_for_capacity.return_value = "reservation"
+        with patch("app.llm.groq.groq_tpm_limiter", limiter):
+            provider.generate_sync("prompt", json_mode=True)
+
+    assert client.post.call_count == 1
+    assert "response_format" not in client.post.call_args.kwargs["json"]
+    limiter.wait_for_capacity.assert_called_once()
 
 
 def test_token_estimate_includes_completion_budget():

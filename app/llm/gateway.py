@@ -39,6 +39,19 @@ def _increase_completion_budget(kwargs: dict[str, object]) -> dict[str, object]:
     return retry_kwargs
 
 
+def _build_structured_prompt(prompt: str, response_model: type[T]) -> str:
+    schema = json.dumps(
+        response_model.model_json_schema(),
+        separators=(",", ":"),
+    )
+    return (
+        f"{prompt}\n\n"
+        "Respond ONLY with valid JSON that matches this JSON schema. "
+        "Do not include markdown fences or commentary.\n\n"
+        f"JSON schema:\n{schema}"
+    )
+
+
 class LLMGateway:
     """Single entry point for all LLM usage."""
 
@@ -85,13 +98,7 @@ class LLMGateway:
         Retries invalid JSON once, and increases the completion budget when
         the provider reports that the output was truncated.
         """
-        schema = json.dumps(response_model.model_json_schema(), indent=2)
-        structured_prompt = (
-            f"{prompt}\n\n"
-            "Respond ONLY with valid JSON that matches this JSON schema. "
-            "Do not include markdown fences or commentary.\n\n"
-            f"JSON schema:\n{schema}"
-        )
+        structured_prompt = _build_structured_prompt(prompt, response_model)
 
         last_error: Exception | None = None
         request_kwargs = dict(kwargs)
@@ -142,13 +149,7 @@ class LLMGateway:
         hood so a sync call chain (Chat Safety, Enquiry) can request
         validated JSON without converting to async.
         """
-        schema = json.dumps(response_model.model_json_schema(), indent=2)
-        structured_prompt = (
-            f"{prompt}\n\n"
-            "Respond ONLY with valid JSON that matches this JSON schema. "
-            "Do not include markdown fences or commentary.\n\n"
-            f"JSON schema:\n{schema}"
-        )
+        structured_prompt = _build_structured_prompt(prompt, response_model)
 
         last_error: Exception | None = None
         request_kwargs = dict(kwargs)
