@@ -14,8 +14,20 @@ from app.capabilities.support.schemas import ConversationTurn
 from app.core.exceptions import AIProviderError
 
 
-def _result(intent, confidence=0.9, entities=None):
-    return LLMIntentResult(intent=intent, confidence=confidence, entities=entities or {})
+def _result(
+    intent,
+    confidence=0.9,
+    entities=None,
+    requires_knowledge=False,
+    knowledge_query=None,
+):
+    return LLMIntentResult(
+        intent=intent,
+        confidence=confidence,
+        entities=entities or {},
+        requires_knowledge=requires_knowledge,
+        knowledge_query=knowledge_query,
+    )
 
 
 def _classifier(response=None, raises=None):
@@ -32,6 +44,7 @@ def test_high_confidence_intent_returned():
         response=LLMIntentResult(
             intent=LiveDataIntent.MY_BOOKINGS,
             requested_limit=2,
+            requires_knowledge=False,
             confidence=0.95,
         )
     )
@@ -66,6 +79,27 @@ def test_none_intent_returned():
     out = c.classify("what is the cancellation policy", "customer")
     assert out is not None
     assert out.intent == LiveDataIntent.NONE
+
+
+def test_mixed_question_returns_live_and_knowledge_needs():
+    c = _classifier(
+        response=_result(
+            LiveDataIntent.MY_COINS,
+            0.97,
+            requires_knowledge=True,
+            knowledge_query="How does bidding work on Swabi?",
+        )
+    )
+
+    out = c.classify(
+        "provide me my swabi coins balance and how bidding works in this platform",
+        "customer",
+    )
+
+    assert out is not None
+    assert out.intent == LiveDataIntent.MY_COINS
+    assert out.requires_knowledge is True
+    assert out.knowledge_query == "How does bidding work on Swabi?"
 
 
 def test_provider_error_returns_none():

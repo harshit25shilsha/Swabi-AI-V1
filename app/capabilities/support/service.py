@@ -350,7 +350,7 @@ def ask(
     retriever: RagRetriever | None = None,
     user_jwt: str | None = None,
 ) -> SupportAskResponse:
-    """Answer a support question — live data if needed, RAG if not."""
+    """Answer a support question with the planned live-data and RAG sources."""
     q_hash = _question_hash(request.question)
     audience = request.audience.value
     area_hint = request.knowledge_area.value if request.knowledge_area else None
@@ -385,6 +385,10 @@ def ask(
         use_rag=resolved.use_rag,
     )
     use_rag = resolved.use_rag is True
+    if resolved.reason == "llm_unavailable":
+        live_data_warning = (
+            "The source planner was unavailable; this answer may omit live data."
+        )
 
     # Recognized live-data intents whose backend integration is not wired yet.
     if resolved.intent in _NOT_YET_IMPLEMENTED:
@@ -619,8 +623,11 @@ def ask(
     retrieval_stage_started = time.perf_counter()
     if should_retrieve and version_ok:
         assert r is not None
+        knowledge_query = getattr(resolved, "knowledge_query", None)
+        if not isinstance(knowledge_query, str) or not knowledge_query.strip():
+            knowledge_query = request.question
         retrieval_question = "\n".join(
-            [turn.content for turn in request.conversation_history[-6:]] + [request.question]
+            [turn.content for turn in request.conversation_history[-6:]] + [knowledge_query]
         )
         try:
             chunks = r.search(
@@ -686,6 +693,11 @@ def ask(
                 knowledge_version=knowledge_version,
                 retrieval_mode_used="hybrid",
                 live_data_warning=live_data_warning,
+            )
+        if not chunks and live_data_used and use_rag and not live_data_warning:
+            live_data_warning = (
+                "The knowledge base returned no supporting content; "
+                "the answer may omit policy or process details."
             )
 
     # ------------------------------------------------------------------
@@ -800,11 +812,13 @@ def ask(
             confidence=0.7,
         )
 
-    if resolved.intent == LiveDataIntent.PACKAGE_SEARCH and live_data_used and live_text:
-        # Catalogue answers are serialized from the verified records rather
-        # than trusting generated text to preserve destination and package IDs.
-        # This also prevents mixed RAG/catalogue questions from reintroducing
-        # packages excluded by the destination filter.
+    if (
+        resolved.intent == LiveDataIntent.PACKAGE_SEARCH
+        and live_data_used
+        and live_text
+        and (not use_rag or not chunks)
+    ):
+        # Without grounded knowledge evidence, return only the verified catalogue.
         llm_out = LLMAnswerOutput(
             answer_type=AnswerType.ANSWERED,
             answer=live_text,
@@ -812,7 +826,16 @@ def ask(
             confidence=0.7,
         )
 
-    if requested_limit is not None and live_data_used and live_text:
+    if (
+        requested_limit is not None
+        and live_data_used
+        and live_text
+        and not (
+            resolved.intent == LiveDataIntent.PACKAGE_SEARCH
+            and use_rag
+            and chunks
+        )
+    ):
         expected_items = _list_item_count(live_text)
         generated_items = _list_item_count(llm_out.answer)
         if expected_items == 0 or generated_items != expected_items:

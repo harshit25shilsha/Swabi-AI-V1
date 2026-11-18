@@ -73,3 +73,16 @@ def test_how_to_inspect_booking_status_is_live_only():
 
     assert is_general_process_question(question) is False
     assert is_live_data_question(question) is True
+
+
+@pytest.mark.parametrize(
+    "q",
+    [
+        "Show my latest bookings",
+        "Show my recent trips",
+        "List my last payments",
+        "Show my latest bookings and explain the cancellation policy.",
+    ],
+)
+def test_personal_list_requests_are_live_even_with_knowledge_topics(q):
+    assert is_live_data_question(q) is True

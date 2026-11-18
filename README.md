@@ -399,11 +399,12 @@ Swabi database directly.
 - **Approved knowledge:** Stable policies and process guidance are retrieved
   from Qdrant, filtered by audience and knowledge area. Policy chunks must be
   approved, effective, and not expired.
-- **Hybrid intent and answers:** Deterministic guards enforce audience scope
-  and preserve exact-ID fast paths. The LLM resolves list, catalogue, and
-  contextual follow-up requests; authorized facts are fetched from NestJS and
-  combined with approved RAG evidence when needed. The answer LLM receives
-  only allowlisted live fields and generates the user-facing response.
+- **Hybrid intent and answers:** A structured source planner runs for each
+  support question and independently identifies a supported live-data intent
+  and any knowledge-base subquestion. Deterministic checks still enforce
+  audience scope; authorized facts are fetched from NestJS and combined with
+  approved RAG evidence when both are needed. The answer LLM receives only
+  allowlisted live fields and retrieved knowledge.
 - **Conversation context and limits:** Clients may send up to 10 recent
   `conversation_history` turns (`user` or `assistant`, at most 2,000
   characters each). Explicit list limits are applied before answer generation;
@@ -411,10 +412,11 @@ Swabi database directly.
   Broad payment-history requests summarize up to 20 available records and
   offer a follow-up; other unspecified lists default to five records.
   Live-only requests skip Qdrant and knowledge-version checks.
-- **Latency:** Obvious unfiltered catalogue-list requests use a deterministic
-  fast path; destination/context-dependent requests still use semantic
-  classification. Live API attempts use a 5-second timeout and at most one
-  retry.
+- **Latency and retries:** Every support question uses the structured source
+  planner so mixed-source requests do not depend on phrase-matching gates.
+  Live NestJS requests use an 8-second per-attempt timeout, with up to 3
+  attempts and bounded retry delays.
+
 - **No unsupported claims:** The current package endpoint filters only by
   destination. It does not expose season, travel-date availability, budget,
   or group-size filters; the answer says these constraints could not be
@@ -423,6 +425,66 @@ Swabi database directly.
   knowledge citations and identify their source through `live_data_sources`.
   Unsupported or out-of-scope questions receive a safe fallback with
   audience-specific app guidance.
+
+### Combined Live Data + RAG responses
+
+AI Support supports three source-routing modes:
+
+| Request type | Live NestJS API | RAG / Qdrant | Answer behavior |
+|---|---|---|---|
+| Knowledge-only | No | Yes | Generates an answer grounded in approved knowledge with citations. |
+| Live-data-only | Yes | No | Generates an answer using authorized, allowlisted live data. |
+| Mixed-source | Yes | Yes | Combines authorized live data and approved knowledge in one response. |
+
+For every question, the structured source planner independently identifies
+the supported live-data intent and whether approved knowledge is also needed.
+It can return a focused knowledge query so mixed questions retrieve the
+relevant policy or workflow rather than relying on the full mixed message.
+The service then:
+
+1. Plans the live-data and knowledge requirements independently.
+2. Fetches the requested personal or marketplace data from the appropriate
+   NestJS endpoint using the original user JWT.
+3. Retrieves approved knowledge using the planner's knowledge query when
+   required.
+4. Passes the allowlisted live facts, retrieved knowledge, and relevant
+   conversation context to answer generation.
+5. Returns one combined answer with knowledge citations and live-data
+   source metadata.
+
+For example:
+
+**Question:**
+"Show my latest bookings and explain the cancellation policy."
+
+Expected behavior:
+- Fetch the customer's bookings through `GET /api/bookings/my`.
+- Retrieve the applicable cancellation policy from the knowledge base.
+- Generate one answer containing the booking information and policy explanation.
+- Include citations for the knowledge-based policy information.
+
+A personal-data request must not be discarded merely because the same
+question also contains policy or process keywords.
+
+### Support response metadata
+
+| Field | Meaning |
+|---|---|
+| `answer_type` | Result category, such as `answered` or `needs_live_data`. |
+| `citations` | Retrieved knowledge chunks supporting the answer. |
+| `retrieval_mode_used` | Retrieval mode, including `hybrid_live` for combined live and knowledge retrieval. |
+| `knowledge_version` | Active knowledge version used for retrieval. |
+| `live_data_used` | Whether live NestJS data was successfully used. |
+| `live_data_sources` | NestJS endpoint labels used for live retrieval. |
+| `live_data_warning` | Warning when live-data retrieval has an issue. |
+| `confidence` | Answer confidence score. |
+| `request_id` | Request correlation identifier. |
+
+Live-only requests do not require knowledge citations. Mixed-source
+responses should cite retrieved knowledge while identifying the live
+endpoints used. A live-data source label does not replace authorization
+or prove that the returned business data is correct.
+
 
 ### Customer enquiry-bid retrieval
 
@@ -449,6 +511,28 @@ pagination behaviour in the deployment environment.
 Stable questions such as how bidding works continue through approved RAG
 retrieval. The service never substitutes knowledge-base content for a failed
 or unavailable personal bid lookup, and it never writes enquiry or bid state.
+
+
+### Mixed-source regression tests
+
+| Test question | Expected routing |
+|---|---|
+| Show my latest bookings | Live API only |
+| Explain the cancellation policy | RAG only |
+| Show my latest bookings and explain the cancellation policy | Live API + RAG |
+| How can I cancel my booking? | RAG only |
+| Show my booking status and explain refund rules | Live API + RAG |
+
+Validation requirements:
+
+- Verify the correct live-data intent is resolved.
+- Verify `use_rag` is enabled for mixed-source requests.
+- Verify the correct authenticated customer's data is returned.
+- Verify the answer uses the retrieved policy rather than invented rules.
+- Verify citations and live-data source metadata.
+- Verify failed live-data requests do not produce fabricated personal data.
+- Verify existing knowledge-only and live-only behavior remains unchanged.
+
 
 ### Phase 2 implementation and current status
 

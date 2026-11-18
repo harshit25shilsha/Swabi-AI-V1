@@ -81,6 +81,24 @@ _PERSONAL_STATE_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
 )
 
+# Explicit personal list requests with recency modifiers.
+# These must remain live-data requests even when the same question
+# also contains a policy or knowledge topic.
+
+_PERSONAL_LIST_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"\b(?:show|list|check|get|view|display|fetch)\s+(?:me\s+)?"
+        r"(?:all\s+)?my\s+(?:(?:latest|recent|last|past|previous|upcoming)\s+)?"
+        r"(?:bookings?|trips?|bids?|payments?|transactions?|orders?|enquir(?:y|ies))\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bmy\s+(?:latest|recent|last|past|previous|upcoming)\s+"
+        r"(?:bookings?|trips?|bids?|payments?|transactions?|orders?|enquir(?:y|ies))\b",
+        re.IGNORECASE,
+    ),
+)
+
 _GENERAL_PROCESS_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
         r"\bwhat\s+(happens|should\s+i\s+do|can\s+i\s+do)\b"
@@ -143,8 +161,19 @@ def is_live_data_question(question: str) -> bool:
     """True when wording explicitly requests current, personal marketplace data."""
     if not question:
         return False
+    
     if _requests_current_state(question):
         return True
+    
+    # Detect explicit personal list requests before the knowledge-topic gate.
+    # Mixed questions may contain both booking and policy ketworrds.
+    if any(pattern.search(question) for pattern in _PERSONAL_LIST_PATTERNS):
+        return True
+    
     if is_general_process_question(question):
         return False
-    return any(pattern.search(question) for pattern in _PERSONAL_STATE_PATTERNS)
+    
+    return any(
+        pattern.search(question)
+        for pattern in _PERSONAL_STATE_PATTERNS
+    )

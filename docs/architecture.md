@@ -657,10 +657,13 @@ if the model ignores the requested count, the service returns the trimmed
 allowlisted facts. Live-only requests do not initialize RAG or perform a
 knowledge-version check. Authentication and audience-scope checks remain
 deterministic and run before any private API fetch.
-Obvious unfiltered public catalogue-list requests use a deterministic fast
-path to avoid a classification call; contextual or destination-dependent
-requests use semantic classification. Live API calls use a five-second
-per-attempt timeout with at most one retry.
+The structured source planner runs for every support question and identifies
+the supported live-data intent independently from any knowledge-base need.
+Deterministic audience-scope checks remain in force.
+Live API requests use an 8-second per-attempt timeout and allow up to
+3 attempts. Retryable HTTP responses and transient transport failures
+use bounded exponential retry delays, starting at 1 second.
+
 
 ### Extending
 
@@ -702,14 +705,14 @@ responsible for resource authorization and business state.
 
 ### Routing and answer source
 
-The service resolves an intent before retrieving knowledge:
+The service creates a structured source plan before fetching live data or
+retrieving knowledge:
 
-1. Deterministic checks handle security, role scope, explicit IDs, validation,
-   and narrow fast paths. They do not authorize a request based on an LLM
-   classification.
-2. The hybrid resolver uses the LLM to understand supported customer/vendor
-   intents and varied phrasings when a deterministic fast path does not apply.
-   The application maps the result to an allowlisted capability.
+1. A structured LLM planner runs for every question and returns a supported
+   live-data intent, its entities, and whether a separate knowledge query is
+   needed. Mixed questions are not gated by keyword or phrase heuristics.
+2. Deterministic checks enforce audience scope and validation. They do not
+   authorize a request based on an LLM classification.
 3. Audience checks prevent cross-role access; private intents require a JWT.
    NestJS remains authoritative for user authorization and business data.
 4. Live responses are formatted to allowlisted fields and passed with the
@@ -718,8 +721,9 @@ The service resolves an intent before retrieving knowledge:
    treat itself as a source of current account data. Explicit list limits are
    enforced before generation and checked afterward; if generation violates
    a requested count, the service returns the trimmed verified facts.
-5. Stable policy and workflow questions use approved RAG evidence, which is
-   included in grounded answer generation with citations. Unsupported
+5. When the planner identifies a knowledge need, the service retrieves
+   approved RAG evidence using the focused knowledge query and includes it in
+   grounded answer generation with citations. Unsupported
    questions fail safely with audience-specific guidance rather than
    invented facts.
 
@@ -728,9 +732,9 @@ follow-ups. Context helps interpret references and constraints but cannot
 change the authenticated identity, audience, or access scope. Broad payment
 history requests may summarize up to 20 available records when no count is
 specified; other unspecified lists default to five. Live-only requests avoid
-RAG/Qdrant checks, and obvious unfiltered catalogue-list requests avoid an
-intent-classifier call. Contextual or destination-filtered catalogue requests
-still use semantic classification.
+RAG/Qdrant checks when the source plan identifies no knowledge need. The
+source planner is invoked for both simple and compound requests, including
+unfiltered catalogue requests.
 
 Live transport currently resides in
 `app/capabilities/support/live_data.py`. It calls NestJS, forwards the
@@ -745,6 +749,103 @@ The package list API currently supports `page`, `limit`, and `destination`.
 It does not expose season, travel-date availability, budget, or group-size
 filters. Support responses must not claim those constraints have been
 applied or that matching availability is confirmed.
+
+
+### Multi-source execution flow
+
+Support requests can use knowledge retrieval, live business data, or both.
+The structured source plan independently identifies a live-data intent and
+any knowledge-base query; phrase heuristics do not decide which source runs.
+
+```text
+                  Support Question
+                         |
+                         v
+                Authentication and
+                  Audience Checks
+                         |
+                         v
+                   Intent Resolver
+                         |
+              +----------+----------+
+              |                     |
+              v                     v
+        Live Intent?           Knowledge Required?
+              |                     |
+         +----+----+           +----+----+
+         |         |           |         |
+        Yes        No         Yes        No
+         |         |           |         |
+         v         |           v         |
+   Authorized      |      Hybrid RAG     |
+   NestJS Fetch    |      Retrieval      |
+         |         |           |         |
+         +----+----+-----------+---------+
+              |
+              v
+       Answer Generation
+       (available live facts,
+        retrieved knowledge,
+        conversation context)
+              |
+              v
+        Response Validation
+              |
+              v
+        Support API Response
+```
+
+Execution modes:
+
+| Mode | Live fetch | RAG retrieval | Result |
+|---|---|---|---|
+| Knowledge-only | No | Yes | Grounded knowledge answer with citations. |
+| Live-only | Yes | No | Answer generated from allowlisted live facts. |
+| Mixed-source | Yes | Yes | Combined answer with live-data metadata and knowledge citations. |
+
+For mixed-source requests, live-data retrieval and RAG retrieval are
+independent evidence sources. The answer-generation layer receives both
+when available and must use each source only for the information it supports.
+
+Example:
+
+`Show my latest bookings and explain the cancellation policy.`
+
+- Live intent: `MY_BOOKINGS`
+- Live endpoint: `GET /api/bookings/my`
+- Knowledge requirement: cancellation policy
+- RAG retrieval: approved cancellation-policy chunks
+- Retrieval mode: `hybrid_live`
+
+The service must not replace a failed personal-data lookup with
+knowledge-base content or invent missing booking information.
+```
+
+### Add response metadata documentation
+
+<CodeBlock language="markdown" editable>
+### Source and retrieval metadata
+
+The Support response exposes source information so callers can distinguish
+knowledge-backed answers from live-data answers.
+
+- `retrieval_mode_used`: identifies the retrieval mode. `hybrid_live`
+  indicates that live data and knowledge retrieval were both used.
+- `live_data_used`: true when live data was successfully incorporated.
+- `live_data_sources`: identifies the NestJS endpoint or endpoints used.
+- `live_data_warning`: exposes a live-data retrieval warning when present.
+- `citations`: references the retrieved knowledge chunks supporting the answer.
+- `knowledge_version`: identifies the knowledge index version used.
+- `answer_type`: identifies the response outcome.
+
+For a mixed-source response, `live_data_used` should be true,
+`live_data_sources` should contain the successfully used endpoint labels,
+and `citations` should contain valid knowledge references.
+
+For a live-only response, knowledge retrieval is skipped and citations
+remain empty. For a knowledge-only response, live-data metadata remains
+unused.
+```
 
 ### Customer enquiry-bid classification and retrieval
 
@@ -860,6 +961,26 @@ precision 0.700, citation recall 0.716, and semantic judge coverage 0.467
 (8 judge errors). Its answer-support rate of 1.0 applies only to the seven
 judged cases. The grounding CLI records judge errors per case and continues
 with later cases.
+
+### Mixed-source regression tests
+
+| Test question | Expected routing |
+|---|---|
+| Show my latest bookings | Live API only |
+| Explain the cancellation policy | RAG only |
+| Show my latest bookings and explain the cancellation policy | Live API + RAG |
+| How can I cancel my booking? | RAG only |
+| Show my booking status and explain refund rules | Live API + RAG |
+
+Validation requirements:
+
+- Verify the correct live-data intent is resolved.
+- Verify `use_rag` is enabled for mixed-source requests.
+- Verify the correct authenticated customer's data is returned.
+- Verify the answer uses the retrieved policy rather than invented rules.
+- Verify citations and live-data source metadata.
+- Verify failed live-data requests do not produce fabricated personal data.
+- Verify existing knowledge-only and live-only behavior remains unchanged.
 
 ### Phase 2 status
 

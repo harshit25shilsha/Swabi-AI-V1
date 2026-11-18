@@ -16,7 +16,7 @@ from app.capabilities.support.schemas import (
     SupportAskRequest,
 )
 from app.capabilities.support.service import ask
-from app.rag.schemas import Audience
+from app.rag.schemas import Audience, RetrievedChunk
 
 
 @pytest.fixture
@@ -494,6 +494,131 @@ def test_popular_destinations_no_jwt(retriever, patch_version_ok, patch_gateway)
     assert "Srinagar" in r.answer
     assert "21" in r.answer
     patch_gateway.generate_structured_sync.assert_called_once()
+
+
+def test_mixed_popular_destinations_and_booking_process_uses_both_sources(
+    retriever, patch_version_ok, patch_gateway
+):
+    retriever.search.return_value = [
+        RetrievedChunk(
+            chunk_id="workflow",
+            section_id="8.1",
+            section_path="Customer Workflow",
+            text="To book a package, post an enquiry and review vendor bids.",
+            score=0.9,
+        )
+    ]
+    patch_gateway.generate_structured_sync.return_value = LLMAnswerOutput(
+        answer_type=AnswerType.ANSWERED,
+        answer="Srinagar is popular. To book, post an enquiry and review vendor bids.",
+        citation_chunk_ids=["workflow"],
+        confidence=0.95,
+    )
+    with (
+        patch("app.capabilities.support.service._get_resolver") as rmock,
+        patch(
+            "app.capabilities.support.service.fetch_for_intent",
+            return_value=(
+                "GET /api/analytics/popular-destinations",
+                {"destinations": [{"destination": "Srinagar", "total_enquiries": 21}]},
+            ),
+        ) as fetch,
+    ):
+        rmock.return_value.resolve.return_value = MagicMock(
+            intent=LiveDataIntent.POPULAR_DESTINATIONS,
+            entities={},
+            source="llm",
+            reason="",
+            use_rag=True,
+        )
+        response = ask(
+            SupportAskRequest(
+                question=(
+                    "provide popular destinations in this platform and "
+                    "how can i book package in this platform"
+                ),
+                audience=Audience.CUSTOMER,
+            ),
+            retriever=retriever,
+            user_jwt=None,
+        )
+
+    fetch.assert_called_once()
+    retriever.search.assert_called_once()
+    assert response.live_data_used is True
+    assert response.retrieval_mode_used == "hybrid_live"
+    assert "Srinagar" in response.answer
+    assert "post an enquiry" in response.answer
+    assert [citation.chunk_id for citation in response.citations] == ["workflow"]
+
+
+def test_mixed_package_search_keeps_live_catalogue_and_knowledge_answer(
+    retriever, patch_version_ok, patch_gateway
+):
+    retriever.search.return_value = [
+        RetrievedChunk(
+            chunk_id="bidding-workflow",
+            section_id="2.2",
+            section_path="Bidding Workflow",
+            text="Vendors bid on enquiries; customers can review and accept a bid.",
+            score=0.9,
+        )
+    ]
+    patch_gateway.generate_structured_sync.return_value = LLMAnswerOutput(
+        answer_type=AnswerType.ANSWERED,
+        answer=(
+            "The Goa package PKG-922 costs INR 2,000. "
+            "Vendors bid on enquiries; customers can review and accept a bid."
+        ),
+        citation_chunk_ids=["bidding-workflow"],
+        confidence=0.95,
+    )
+    with (
+        patch("app.capabilities.support.service._get_resolver") as rmock,
+        patch(
+            "app.capabilities.support.service.fetch_for_intent",
+            return_value=(
+                "GET /api/packages",
+                {
+                    "packages": [
+                        {
+                            "packageCode": "PKG-922",
+                            "title": "Goa Escape",
+                            "destination": "Goa",
+                            "price": 2000,
+                            "currency": "INR",
+                        }
+                    ],
+                    "total": 1,
+                },
+            ),
+        ) as fetch,
+    ):
+        rmock.return_value.resolve.return_value = MagicMock(
+            intent=LiveDataIntent.PACKAGE_SEARCH,
+            entities={"query": "Goa"},
+            source="llm",
+            reason="llm_conf=0.95",
+            use_rag=True,
+            knowledge_query="How does bidding work on Swabi?",
+        )
+        response = ask(
+            SupportAskRequest(
+                question="Show me packages in Goa and explain how bidding works.",
+                audience=Audience.CUSTOMER,
+            ),
+            retriever=retriever,
+            user_jwt=None,
+        )
+
+    fetch.assert_called_once()
+    assert response.live_data_used is True
+    assert response.retrieval_mode_used == "hybrid_live"
+    assert "PKG-922" in response.answer
+    assert "Vendors bid on enquiries" in response.answer
+    assert [citation.chunk_id for citation in response.citations] == [
+        "bidding-workflow"
+    ]
 
 
 def test_package_detail_formatter_produces_expected_shape():

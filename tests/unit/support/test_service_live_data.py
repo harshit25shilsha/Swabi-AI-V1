@@ -82,6 +82,35 @@ def test_vendor_asking_customer_scope(retriever, patch_version_ok):
     assert r.answer_type == AnswerType.NEEDS_LIVE_DATA
 
 
+def test_source_planner_failure_falls_back_to_rag_with_warning(
+    retriever, patch_version_ok
+):
+    with (
+        patch("app.capabilities.support.service._get_resolver") as resolver,
+        patch("app.capabilities.support.service.fetch_for_intent") as fetch,
+    ):
+        resolver.return_value.resolve.return_value = MagicMock(
+            intent=LiveDataIntent.NONE,
+            entities={},
+            source="none",
+            reason="llm_unavailable",
+            use_rag=True,
+        )
+        response = ask(
+            SupportAskRequest(
+                question="What are my Swabi Coins and how does bidding work?",
+                audience=Audience.CUSTOMER,
+            ),
+            retriever=retriever,
+            user_jwt="jwt-x",
+        )
+
+    fetch.assert_not_called()
+    retriever.search.assert_called_once()
+    assert response.live_data_warning is not None
+    assert "source planner was unavailable" in response.live_data_warning
+
+
 def test_llm_classified_cross_role_request_is_blocked_before_fetch(retriever):
     with (
         patch("app.capabilities.support.service._get_resolver") as resolver,
@@ -197,6 +226,71 @@ def test_wallet_balance_uses_live_data_without_rag(retriever, patch_version_ok, 
     retriever.search.assert_not_called()
     patch_gateway.generate_structured_sync.assert_called_once()
     patch_version_ok.assert_not_called()
+
+
+def test_coins_balance_and_bidding_workflow_use_both_sources(
+    retriever, patch_version_ok, patch_gateway
+):
+    retriever.search.return_value = [
+        RetrievedChunk(
+            chunk_id="bidding-workflow",
+            section_id="2.2",
+            section_path="Bidding Workflow",
+            text="Vendors submit bids on customer enquiries. Customers review bids and accept one.",
+            score=0.9,
+        )
+    ]
+    patch_gateway.generate_structured_sync.return_value = LLMAnswerOutput(
+        answer_type=AnswerType.ANSWERED,
+        answer=(
+            "Your available balance is 0 coins, with 1,021 pending. "
+            "Vendors bid on your enquiry; you can review and accept a bid."
+        ),
+        citation_chunk_ids=["bidding-workflow"],
+        confidence=0.95,
+    )
+    with (
+        patch("app.capabilities.support.service._get_resolver") as resolver,
+        patch(
+            "app.capabilities.support.service.fetch_for_intent",
+            return_value=(
+                "GET /api/wallet/me/balance",
+                {
+                    "coinBalance": 0,
+                    "totalCoinsBalance": 1021,
+                    "pendingCoins": 1021,
+                },
+            ),
+        ) as fetch,
+    ):
+        resolver.return_value.resolve.return_value = MagicMock(
+            intent=LiveDataIntent.MY_COINS,
+            entities={},
+            source="llm",
+            reason="llm_conf=0.95",
+            use_rag=True,
+            knowledge_query="How does bidding work on Swabi?",
+        )
+        response = ask(
+            SupportAskRequest(
+                question=(
+                    "provide me my swabi coins balance and how bidding works "
+                    "in this platform"
+                ),
+                audience=Audience.CUSTOMER,
+            ),
+            retriever=retriever,
+            user_jwt="jwt-x",
+        )
+
+    fetch.assert_called_once()
+    assert response.live_data_used is True
+    assert response.live_data_sources == ["GET /api/wallet/me/balance"]
+    assert response.retrieval_mode_used == "hybrid_live"
+    assert "0 coins" in response.answer
+    assert "bid on your enquiry" in response.answer
+    assert [citation.chunk_id for citation in response.citations] == ["bidding-workflow"]
+    assert retriever.search.call_args.args[0] == "How does bidding work on Swabi?"
 
 
 # ---------------------------------------------------------------------------
