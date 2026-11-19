@@ -195,6 +195,30 @@ def _validate_date_values(extraction: EnquiryExtraction) -> None:
             extraction.duration_nights = range_nights
 
 
+def _message_supports_numeric_date(message: str, value: date | None) -> bool:
+    """Check date evidence using Unicode digits, independent of language.
+
+    The model translates month names into the API's numeric date format.  This
+    guard must therefore not depend on an English month-name regex: ``जनवरी``,
+    ``janvier``, and ``January`` can all accompany the same numeric day/year.
+    ``int`` accepts Unicode decimal digits, including Devanagari and Arabic-
+    Indic numerals.
+    """
+    if value is None:
+        return False
+
+    numbers: set[int] = set()
+    for token in re.findall(r"\d+", message):
+        try:
+            numbers.add(int(token))
+        except ValueError:
+            continue
+
+    return value.day in numbers and (
+        value.year in numbers or value.year % 100 in numbers
+    )
+
+
 def _build_enquiry_title(extraction: EnquiryExtraction) -> str:
     """Build a short, consistent title from extracted trip information."""
     destination = (extraction.destination or "").strip()
@@ -240,6 +264,18 @@ def _build_enquiry_title(extraction: EnquiryExtraction) -> str:
 
 def _apply_date_guard(message: str, extraction: EnquiryExtraction) -> None:
     """Keep only dates supported by the user's message."""
+    model_start = _parse_extracted_date(extraction.travel_date)
+    model_end = _parse_extracted_date(extraction.travel_date_end)
+
+    # First accept an exact date when its day and year are explicitly present
+    # in any Unicode numeral system. English-only date patterns remain below
+    # for relative dates and broad-period handling.
+    if _message_supports_numeric_date(message, model_start):
+        if model_end is not None and not _message_supports_numeric_date(message, model_end):
+            extraction.travel_date_end = None
+        _validate_date_values(extraction)
+        return
+
     date_expressions = list(_EXPLICIT_DATE_PATTERN.finditer(message))
     weekend = _WEEKEND_PATTERN.search(message) is not None
 
@@ -381,30 +417,15 @@ def _normalize_special_requests(value: str) -> str | None:
     return "; ".join(normalized) or None
 
 
-def _requested_stops(message: str) -> str | None:
-    """Return explicitly named sightseeing stops without transport wording."""
-    matches = list(re.finditer(
-        r"\b(?:visit|explore|see|tour)\s+(.+?)"
-        r"(?=\s+(?:from|with|using|by)\s+(?:\d|private|local|airport)\b|"
-        r"[.;!?]|,\s*(?:and\s+)?(?:activities|experiences|we|please|enjoy)\b|"
-        r"\s+(?:and\s+)?(?:enjoy|activities|experiences|we|please|need|prefer)\b|$)",
-        message,
-        re.IGNORECASE,
-    ))
-    if not matches:
-        return None
-    match = matches[-1]
-    stops = match.group(1).strip(" ,")
-    return stops or None
+def _preserve_extraction_details(extraction: EnquiryExtraction) -> None:
+    """Add only deterministic, language-neutral derived details.
 
-
-def _preserve_named_stops(message: str, extraction: EnquiryExtraction) -> None:
+    Do not copy prose from the user's message here. The LLM translates and
+    extracts free-text details for every supported input language; replaying a
+    substring from the original request can reintroduce its source language.
+    """
     summary = extraction.description or f"Trip to {extraction.destination or 'the destination'}"
     details: list[str] = []
-    stops = _requested_stops(message)
-    if stops:
-        if stops and stops.casefold() not in summary.casefold():
-            details.append(f"visiting {stops}")
 
     if extraction.adults is not None and extraction.children:
         ages = [str(child.age) for child in extraction.children if child.age is not None]
@@ -418,34 +439,6 @@ def _preserve_named_stops(message: str, extraction: EnquiryExtraction) -> None:
         extraction.description = f"{summary.rstrip(' .;')}; {'; '.join(details)}"
 
 
-def _transport_location_details(message: str) -> list[str]:
-    details: list[str] = []
-    for sentence in re.split(r"(?<=[.!?;])\s+", message):
-        if not re.search(
-            r"\b(?:cab|taxi|tempo\s+traveller|transport(?:ation)?|pickup|pick-up|vehicle)\b",
-            sentence,
-            re.IGNORECASE,
-        ):
-            continue
-        pickup = re.search(
-            r"\bfrom\s+(.+?)(?=\s+(?:for|during|throughout|and|to)\b|[,.;!?]|$)",
-            sentence,
-            re.IGNORECASE,
-        )
-        dropoff = re.search(
-            r"\bto\s+(.+?)(?=\s+(?:for|during|throughout|and|from)\b|[,.;!?]|$)",
-            sentence,
-            re.IGNORECASE,
-        )
-        if pickup:
-            details.append(f"Pickup from {pickup.group(1).strip()}")
-        if dropoff:
-            location = dropoff.group(1).strip()
-            if not re.match(r"(?:visit|explore|see|tour)\b", location, re.IGNORECASE):
-                details.append(f"Drop-off at {location}")
-    return details
-
-
 def _apply_semantic_preservation(message: str, extraction: EnquiryExtraction) -> None:
     """Preserve high-signal trip intent and experience details in existing fields."""
     normalized = message.casefold()
@@ -454,7 +447,7 @@ def _apply_semantic_preservation(message: str, extraction: EnquiryExtraction) ->
     has_hotel = re.search(r"\bhotels?\b", message, re.IGNORECASE) is not None
     has_houseboat = re.search(r"\bhouse\s*boats?\b", message, re.IGNORECASE) is not None
 
-    _preserve_named_stops(message, extraction)
+    _preserve_extraction_details(extraction)
 
     if re.search(r"\bhoneymoon\b", normalized):
         extraction.trip_type = TripType.HONEYMOON.value
@@ -613,33 +606,12 @@ def _apply_semantic_preservation(message: str, extraction: EnquiryExtraction) ->
     if room_match:
         count = room_match.group("count").casefold()
         extraction.rooms = int(count) if count.isdigit() else _NUMBER_WORDS[count]
-        room_detail = re.match(r"[^.;!?]+", message[room_match.start() :])
-        special_detail = room_detail.group().strip(" ,") if room_detail else room_match.group()
-        # Keep room-specific qualifiers (for example, mountain views), but do
-        # not repeat accommodation, meals, or transport already structured.
-        special_detail = re.split(
-            r"\s+in\s+(?:a|an|the)\s+(?:\d+-star\s+)?(?:hotel|resort)\b"
-            r"|\s+(?:with\s+)?(?:breakfast|lunch|dinner|all meals)\b"
-            r"|\s+and\s+(?:a\s+)?private\s+"
-            r"(?:cab|taxi|suv|tempo\s+traveller|transport(?:ation)?)\b",
-            special_detail,
-            maxsplit=1,
-            flags=re.IGNORECASE,
-        )[0].strip(" ,")
-    else:
-        special_detail = ""
 
     if extraction.duration_days is not None and extraction.duration_days > 0:
         if extraction.duration_nights is None:
             extraction.duration_nights = extraction.duration_days - 1
 
     special_requests = req.special_requests or ""
-    stops = _requested_stops(message)
-    if stops:
-        special_requests = _append_special_request(
-            special_requests,
-            f"Sightseeing in {stops}",
-        )
     for activity_pattern, _ in requested_activities:
         special_requests = re.sub(activity_pattern, "", special_requests, flags=re.IGNORECASE)
     special_requests = re.sub(
@@ -699,15 +671,6 @@ def _apply_semantic_preservation(message: str, extraction: EnquiryExtraction) ->
             special_requests = _append_special_request(special_requests, detail)
 
 
-
-    if special_detail:
-        # Keep a concise room request even when the model supplied a longer
-        # sentence containing the same room count. Normalization below drops
-        # the redundant sentence.
-        special_requests = f"{special_requests}; {special_detail}".strip("; ")
-
-    for detail in _transport_location_details(message):
-        special_requests = _append_special_request(special_requests, detail)
 
     preference_patterns = (
         r"\bpeaceful(?:\s+locations?)?\b",

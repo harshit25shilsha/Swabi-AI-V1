@@ -85,6 +85,7 @@ def test_understand_passes_system_prompt(patch_gateway, mock_gateway):
     kwargs = mock_gateway.generate_structured_sync.call_args.kwargs
     assert "system" in kwargs
     assert "structured-data extractor" in kwargs["system"]
+    assert "every human-readable string in the JSON response MUST be idiomatic English" in kwargs["system"]
     assert "{reference_date}" not in kwargs["system"]
 
 
@@ -242,7 +243,10 @@ def test_family_example_preserves_dates_destinations_transport_and_room_type(
 ):
     extraction = EnquiryExtraction(
         title="7-day family vacation to Himachal Pradesh",
-        description="7-day family vacation to Himachal Pradesh for a family of 6",
+        description=(
+            "7-day family vacation to Himachal Pradesh for a family of 6, "
+            "visiting Shimla, Manali and Solang Valley"
+        ),
         destination="Himachal Pradesh",
         date_flexibility=DateFlexibility(is_flexible=True, note="June"),
         duration_days=7,
@@ -263,7 +267,7 @@ def test_family_example_preserves_dates_destinations_transport_and_room_type(
             ],
             special_requests=(
                 "Ensure comfortable travel for senior citizen and avoid excessive "
-                "walking. Prefer rooms with mountain views"
+                "walking; Two family rooms with mountain views; Pickup from Chandigarh"
             ),
         ),
         rooms=2,
@@ -304,7 +308,7 @@ def test_family_example_preserves_dates_destinations_transport_and_room_type(
     assert r.extraction.rooms == 2
     assert "two family rooms with mountain views" in (
         r.extraction.requirements.special_requests or ""
-    )
+    ).casefold()
     assert "Pickup from Chandigarh" in (r.extraction.requirements.special_requests or "")
     assert r.missing_fields == []
     assert r.clarifying_questions == []
@@ -341,6 +345,25 @@ def test_explicit_date_range_is_preserved(patch_gateway, mock_gateway):
 
     assert r.extraction.travel_date == "15/12/26"
     assert r.extraction.travel_date_end == "20/12/26"
+
+
+def test_non_english_month_names_preserve_model_extracted_date_range(
+    patch_gateway,
+    mock_gateway,
+):
+    mock_gateway.generate_structured_sync.return_value = EnquiryExtraction(
+        destination="Rajasthan",
+        travel_date="15/01/27",
+        travel_date_end="21/01/27",
+        travelers=3,
+    )
+
+    result = svc.understand(
+        "हम 15 जनवरी से 21 जनवरी 2027 तक राजस्थान की यात्रा की योजना बना रहे हैं।"
+    )
+
+    assert result.extraction.travel_date == "15/01/27"
+    assert result.extraction.travel_date_end == "21/01/27"
 
 
 def test_date_range_with_shared_month_is_preserved(patch_gateway, mock_gateway):
@@ -687,7 +710,7 @@ def test_private_transport_and_requested_stops_are_preserved(
         travel_date="2027-01-15",
         travel_date_end="2027-01-21",
         requirements=EnquiryRequirements(
-            special_requests="Drop-off at visit Jaipur",
+            special_requests="Sightseeing in Jaipur, Jodhpur and Udaipur",
         ),
     )
 
@@ -701,7 +724,6 @@ def test_private_transport_and_requested_stops_are_preserved(
     assert result.extraction.travel_date_end == "21/01/27"
     special = result.extraction.requirements.special_requests or ""
     assert "Sightseeing in Jaipur, Jodhpur and Udaipur" in special
-    assert "Drop-off at visit Jaipur" not in special
 
 
 def test_unspecified_people_default_to_adults_and_specific_activity_wins(
@@ -745,6 +767,41 @@ def test_special_requests_deduplicate_pickups_and_sightseeing(
     special = result.extraction.requirements.special_requests or ""
     assert special.casefold().count("kochi airport") == 1
     assert special.casefold().count("munnar and alleppey backwaters") == 1
+
+
+def test_hinglish_sightseeing_stops_do_not_leak_into_english_fields(
+    patch_gateway,
+    mock_gateway,
+):
+    mock_gateway.generate_structured_sync.return_value = EnquiryExtraction(
+        description=(
+            "Planning a Rajasthan trip from 15 January to 21 January 2027, "
+            "exploring Jaipur, Jodhpur and Udaipur, with 3 adults and private "
+            "transportation for the entire trip"
+        ),
+        destination="Rajasthan",
+        travel_date="15/01/27",
+        travel_date_end="21/01/27",
+        travelers=3,
+        adults=3,
+        requirements=EnquiryRequirements(
+            transport="Private Transportation",
+            special_requests="Sightseeing in Jaipur, Jodhpur and Udaipur",
+        ),
+    )
+
+    result = svc.understand(
+        "Hum 15 January se 21 January 2027 tak Rajasthan trip plan kar rahe "
+        "hain. Hum total 3 adults hain. Hum Jaipur, Jodhpur aur Udaipur "
+        "explore karna chahte hain, aur poori trip ke liye private "
+        "transportation chahiye."
+    )
+
+    assert result.extraction.requirements.special_requests == (
+        "Sightseeing in Jaipur, Jodhpur and Udaipur"
+    )
+    assert "karna chahte hain" not in (result.extraction.description or "")
+    assert "poori trip ke liye" not in (result.extraction.description or "")
 
 
 def test_special_requests_omit_redundant_room_sentence(
