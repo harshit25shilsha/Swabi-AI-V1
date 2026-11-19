@@ -40,7 +40,8 @@ retrieval, and answer generation; it does not perform business writes.
 app/
 ├── main.py                     FastAPI app: routes, middleware, exception handlers
 ├── core/                       Config, logging, exceptions, Redis,
-│                               request-scoped auth context, service auth
+│                               response cache, request-scoped auth context,
+│                               service auth
 ├── llm/                        Shared LLM gateway + provider clients
 ├── capabilities/               Feature-specific code
 │   ├── chat_safety/            Chat moderation
@@ -607,6 +608,45 @@ Everything downstream is deterministic:
 - `completeness` — `1.0 - (required_missing / required_total)`.
 
 The frontend can rely on these being stable for a given extraction.
+
+### Redis response cache
+
+`POST /api/v1/enquiry/understand` can reuse a successful, validated response
+from Redis when `ENABLE_ENQUIRY_RESPONSE_CACHE=true`. No other endpoint uses
+full response caching; in particular, support answers that may include
+user-specific live data are not cached.
+
+The cache key is a SHA-256 digest of a canonical, versioned payload containing
+the whitespace-normalized message, normalized currency hint, configured model,
+`ENQUIRY_PROMPT_VERSION`, and response-schema version. Message case and
+punctuation are preserved. The resulting key uses the
+`swabi:cache:enquiry-understand:v1:` prefix, so raw enquiry text is not exposed
+in Redis keys and prompt/schema changes naturally select a new entry.
+
+Only successful responses that pass normal response validation and
+post-processing are cached. Entries expire after
+`ENQUIRY_RESPONSE_CACHE_TTL_SECONDS` (default 900 seconds). The request ID is
+removed from the stored payload and replaced with the current request ID on
+every cache hit.
+
+On a miss, a short-lived Redis lock coordinates duplicate requests. A lock
+owner rechecks the cache before calling the synchronous enquiry service;
+waiters poll for the completed result and can proceed independently if the
+owner does not finish within the configured wait. The defaults for both lock
+TTL and wait are 210 seconds, chosen to cover the configured LLM timeout and
+retry budget. Lock release uses a per-owner token check, preventing cleanup
+from deleting a lock acquired by another request.
+
+Redis read, write, and lock failures are fail-open: the request continues
+through normal enquiry processing without relying on cache availability.
+Readiness can report Redis degradation independently, and cache use resumes
+when Redis recovers. Structured logs distinguish cache hits and misses and
+record cache-operation failures; cache-specific metrics are not currently
+exposed.
+
+Verified checks cover Redis caching, request-ID freshness, TTL expiration,
+single-flight behavior, safe lock cleanup, fail-open operation during a Redis
+outage, and recovery after Redis restart.
 
 ### Date resolution
 

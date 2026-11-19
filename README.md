@@ -257,6 +257,31 @@ Only `message` is required. Length: 1–4000 chars.
 The public response contract is locked by
 `tests/contract/test_enquiry_contract.py`.
 
+### Redis response cache
+
+Enquiry Understanding optionally caches successful, validated responses in
+Redis. The cache is enabled with `ENABLE_ENQUIRY_RESPONSE_CACHE=true` and is
+currently the only endpoint using full AI-response caching.
+
+- A key hashes normalized message text, `currency_hint`, model, prompt
+  version, and response-schema version. Raw messages are never used as Redis
+  keys.
+- Cache entries expire after `ENQUIRY_RESPONSE_CACHE_TTL_SECONDS` (default:
+  900 seconds). Each response receives the current HTTP request ID; request
+  IDs are not stored in cached payloads.
+- On a cache miss, Redis single-flight locking lets one request call the LLM.
+  Identical concurrent requests wait for its cached result instead of starting
+  duplicate LLM work. Lock cleanup checks its ownership token before deleting
+  the lock, so one request cannot release another request's lock.
+- Redis read, write, or lock failures fail open: enquiry processing continues
+  without caching. `/ready` reports degraded while Redis is unavailable.
+
+Verified behavior includes Redis cache hits, fresh request IDs on cached
+responses, TTL expiration, single-flight protection for concurrent identical
+requests, safe lock cleanup, fail-open behavior during a Redis outage, and
+recovery after Redis restarts. Support routes are not response-cached yet;
+live user data must not be shared through this cache.
+
 ### Extraction fields
 
 Every field is optional. Missing fields are `null` (scalars) or `[]`
@@ -799,6 +824,10 @@ Key settings:
 | `RAG_RERANKER_MODEL` | `Xenova/ms-marco-MiniLM-L-6-v2` | Local reranker model used when enabled. |
 | `LOG_FORMAT` | `json` | `json` or `text` |
 | `REDIS_URL` | `redis://localhost:6379/0` | Empty disables Redis |
+| `ENABLE_ENQUIRY_RESPONSE_CACHE` | `false` | Enables Redis caching for successful enquiry-understanding responses. |
+| `ENQUIRY_RESPONSE_CACHE_TTL_SECONDS` | `900` | Lifetime of an enquiry response cache entry. |
+| `ENQUIRY_RESPONSE_CACHE_LOCK_TTL_SECONDS` | `210` | Ownership-lock lifetime for an in-flight enquiry request. |
+| `ENQUIRY_RESPONSE_CACHE_LOCK_WAIT_SECONDS` | `210` | Maximum duplicate-request wait for the lock owner's result. |
 
 Groq TPM pacing does not assume an 8,000-token quota. It learns the model's
 reported limit and leaves the configured utilization headroom. Redis shares
