@@ -85,7 +85,10 @@ def test_understand_passes_system_prompt(patch_gateway, mock_gateway):
     kwargs = mock_gateway.generate_structured_sync.call_args.kwargs
     assert "system" in kwargs
     assert "structured-data extractor" in kwargs["system"]
-    assert "every human-readable string in the JSON response MUST be idiomatic English" in kwargs["system"]
+    assert (
+        "every human-readable string in the JSON response MUST be idiomatic English"
+        in kwargs["system"]
+    )
     assert "{reference_date}" not in kwargs["system"]
 
 
@@ -108,9 +111,9 @@ def test_understand_sets_provider(patch_gateway):
 
 def test_maximum_enquiry_message_fits_active_groq_budget():
     system = ENQUIRY_SYSTEM_PROMPT.replace("{reference_date}", "17/11/2026")
-    max_message_length = EnquiryExtractRequest.model_json_schema()[
-        "properties"
-    ]["message"]["maxLength"]
+    max_message_length = EnquiryExtractRequest.model_json_schema()["properties"]["message"][
+        "maxLength"
+    ]
     prompt = _build_structured_prompt("x" * max_message_length, EnquiryExtraction)
     payload = GroqProvider()._build_payload(
         prompt,
@@ -306,9 +309,10 @@ def test_family_example_preserves_dates_destinations_transport_and_room_type(
     assert r.extraction.property_type == "hotel+resort"
     assert r.extraction.requirements.transport == "Private Tempo Traveller"
     assert r.extraction.rooms == 2
-    assert "two family rooms with mountain views" in (
-        r.extraction.requirements.special_requests or ""
-    ).casefold()
+    assert (
+        "two family rooms with mountain views"
+        in (r.extraction.requirements.special_requests or "").casefold()
+    )
     assert "Pickup from Chandigarh" in (r.extraction.requirements.special_requests or "")
     assert r.missing_fields == []
     assert r.clarifying_questions == []
@@ -358,9 +362,7 @@ def test_non_english_month_names_preserve_model_extracted_date_range(
         travelers=3,
     )
 
-    result = svc.understand(
-        "हम 15 जनवरी से 21 जनवरी 2027 तक राजस्थान की यात्रा की योजना बना रहे हैं।"
-    )
+    result = svc.understand("हम 15 जनवरी से 21 जनवरी 2027 तक राजस्थान की यात्रा की योजना बना रहे हैं।")
 
     assert result.extraction.travel_date == "15/01/27"
     assert result.extraction.travel_date_end == "21/01/27"
@@ -521,13 +523,9 @@ def test_hotel_and_resort_ratings_are_preserved_separately(
     extraction = EnquiryExtraction()
     mock_gateway.generate_structured_sync.return_value = extraction
 
-    result = svc.understand(
-        "I want a 4-star hotel or a 5-star resort in Goa"
-    )
+    result = svc.understand("I want a 4-star hotel or a 5-star resort in Goa")
 
-    assert result.extraction.requirements.accommodation == (
-        "4-star Hotel or 5-star Resort"
-    )
+    assert result.extraction.requirements.accommodation == ("4-star Hotel or 5-star Resort")
 
 
 def test_private_cab_does_not_make_houseboat_private(
@@ -542,9 +540,7 @@ def test_private_cab_does_not_make_houseboat_private(
     )
     mock_gateway.generate_structured_sync.return_value = extraction
 
-    result = svc.understand(
-        "Arrange a private cab to Kochi and a houseboat stay for one night"
-    )
+    result = svc.understand("Arrange a private cab to Kochi and a houseboat stay for one night")
 
     special = result.extraction.requirements.special_requests or ""
     assert "houseboat stay for one night" in special.casefold()
@@ -558,9 +554,7 @@ def test_explicit_private_one_night_houseboat_is_preserved(
     extraction = EnquiryExtraction()
     mock_gateway.generate_structured_sync.return_value = extraction
 
-    result = svc.understand(
-        "I want a private houseboat stay for one night in Alleppey"
-    )
+    result = svc.understand("I want a private houseboat stay for one night in Alleppey")
 
     special = result.extraction.requirements.special_requests or ""
     assert "private houseboat stay for one night" in special.casefold()
@@ -595,9 +589,7 @@ def test_budget_per_person_is_preserved_by_fallback(
         travelers=2,
     )
 
-    result = svc.understand(
-        "Trip to Goa for 2 people. Budget is 25k INR per person."
-    )
+    result = svc.understand("Trip to Goa for 2 people. Budget is 25k INR per person.")
 
     assert result.extraction.budget is not None
     assert result.extraction.budget.amount == 25000
@@ -753,15 +745,12 @@ def test_special_requests_deduplicate_pickups_and_sightseeing(
     mock_gateway.generate_structured_sync.return_value = EnquiryExtraction(
         destination="Kerala",
         requirements=EnquiryRequirements(
-            special_requests=(
-                "pickup at Kochi airport; explore Munnar and Alleppey backwaters"
-            ),
+            special_requests=("pickup at Kochi airport; explore Munnar and Alleppey backwaters"),
         ),
     )
 
     result = svc.understand(
-        "Arrange a private cab from Kochi airport and explore Munnar and "
-        "Alleppey backwaters."
+        "Arrange a private cab from Kochi airport and explore Munnar and Alleppey backwaters."
     )
 
     special = result.extraction.requirements.special_requests or ""
@@ -815,9 +804,7 @@ def test_special_requests_omit_redundant_room_sentence(
         ),
     )
 
-    result = svc.understand(
-        "We need two family rooms in a 4-star hotel with breakfast included."
-    )
+    result = svc.understand("We need two family rooms in a 4-star hotel with breakfast included.")
 
     assert result.extraction.requirements.special_requests == (
         "Two family rooms; activities suitable for children"

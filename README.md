@@ -260,8 +260,7 @@ The public response contract is locked by
 ### Redis response cache
 
 Enquiry Understanding optionally caches successful, validated responses in
-Redis. The cache is enabled with `ENABLE_ENQUIRY_RESPONSE_CACHE=true` and is
-currently the only endpoint using full AI-response caching.
+Redis. Enable it with `ENABLE_ENQUIRY_RESPONSE_CACHE=true`.
 
 - A key hashes normalized message text, `currency_hint`, model, prompt
   version, and response-schema version. Raw messages are never used as Redis
@@ -279,8 +278,34 @@ currently the only endpoint using full AI-response caching.
 Verified behavior includes Redis cache hits, fresh request IDs on cached
 responses, TTL expiration, single-flight protection for concurrent identical
 requests, safe lock cleanup, fail-open behavior during a Redis outage, and
-recovery after Redis restarts. Support routes are not response-cached yet;
-live user data must not be shared through this cache.
+recovery after Redis restarts.
+
+### Static Support RAG response cache
+
+`POST /api/v1/support/ask` can optionally cache successful knowledge-base
+answers when `ENABLE_SUPPORT_RAG_RESPONSE_CACHE=true`. It is disabled by
+default. The request must be confidently classified as static RAG, have no
+conversation context or user-specific request fields, pass knowledge-version
+authority checks, and produce an answered response with verified citations.
+
+- The key hashes the normalized question, audience, knowledge area and index
+  version, source-planner and answer-prompt versions, configured model/provider,
+  response-schema version, and retrieval settings. It does not depend on
+  planner-generated query wording, which may vary for an identical request.
+- Cache hits still run source planning and current knowledge-version
+  validation first. This prevents a cached static answer from bypassing the
+  live-data decision or serving an obsolete knowledge index.
+- Mixed-source, live-data, public-catalogue, conversational, insufficient-
+  context, and unverified responses are not cached. In particular, bookings,
+  bids, payments, packages, and other changing backend data remain live.
+- Entries expire after `SUPPORT_RAG_RESPONSE_CACHE_TTL_SECONDS` (default:
+  900 seconds). Cached responses receive the current request ID.
+- Single-flight locks reduce duplicate answer-generation work. Redis failures
+  fail open and the normal support path continues.
+
+Targeted validation passed on 19 Nov 2026:
+`python -m pytest tests/integration/support/test_response_cache.py tests/integration/support/test_api.py tests/unit/support/test_service.py -q`
+(33 passed).
 
 ### Extraction fields
 
@@ -828,6 +853,10 @@ Key settings:
 | `ENQUIRY_RESPONSE_CACHE_TTL_SECONDS` | `900` | Lifetime of an enquiry response cache entry. |
 | `ENQUIRY_RESPONSE_CACHE_LOCK_TTL_SECONDS` | `210` | Ownership-lock lifetime for an in-flight enquiry request. |
 | `ENQUIRY_RESPONSE_CACHE_LOCK_WAIT_SECONDS` | `210` | Maximum duplicate-request wait for the lock owner's result. |
+| `ENABLE_SUPPORT_RAG_RESPONSE_CACHE` | `false` | Enables response caching for eligible static support RAG answers. |
+| `SUPPORT_RAG_RESPONSE_CACHE_TTL_SECONDS` | `900` | Lifetime of a static support answer cache entry. |
+| `SUPPORT_RAG_RESPONSE_CACHE_LOCK_TTL_SECONDS` | `210` | Ownership-lock lifetime for an in-flight static support answer. |
+| `SUPPORT_RAG_RESPONSE_CACHE_LOCK_WAIT_SECONDS` | `210` | Maximum duplicate-request wait for a static support cache result. |
 
 Groq TPM pacing does not assume an 8,000-token quota. It learns the model's
 reported limit and leaves the configured utilization headroom. Redis shares

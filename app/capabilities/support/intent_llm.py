@@ -12,6 +12,7 @@ then dispatches only to explicitly implemented fetchers.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Any
 
@@ -251,6 +252,10 @@ Output: {"intent":"my_coins","entities":{},"requested_limit":null,
          "confidence":0.97}
 
 """
+
+INTENT_PROMPT_VERSION = (
+    "support_intent_" + hashlib.sha256(_SYSTEM_PROMPT.encode("utf-8")).hexdigest()[:8]
+)
 
 
 class LLMIntentResult(BaseModel):

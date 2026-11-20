@@ -612,9 +612,9 @@ The frontend can rely on these being stable for a given extraction.
 ### Redis response cache
 
 `POST /api/v1/enquiry/understand` can reuse a successful, validated response
-from Redis when `ENABLE_ENQUIRY_RESPONSE_CACHE=true`. No other endpoint uses
-full response caching; in particular, support answers that may include
-user-specific live data are not cached.
+from Redis when `ENABLE_ENQUIRY_RESPONSE_CACHE=true`. Support also has a
+separate, opt-in cache for strictly static RAG answers; live or mixed-source
+support responses are never cached.
 
 The cache key is a SHA-256 digest of a canonical, versioned payload containing
 the whitespace-normalized message, normalized currency hint, configured model,
@@ -644,9 +644,9 @@ when Redis recovers. Structured logs distinguish cache hits and misses and
 record cache-operation failures; cache-specific metrics are not currently
 exposed.
 
-Verified checks cover Redis caching, request-ID freshness, TTL expiration,
-single-flight behavior, safe lock cleanup, fail-open operation during a Redis
-outage, and recovery after Redis restart.
+Verified checks for the enquiry cache cover Redis caching, request-ID
+freshness, TTL expiration, single-flight behavior, safe lock cleanup, fail-open
+operation during a Redis outage, and recovery after Redis restart.
 
 ### Date resolution
 
@@ -790,6 +790,37 @@ It does not expose season, travel-date availability, budget, or group-size
 filters. Support responses must not claim those constraints have been
 applied or that matching availability is confirmed.
 
+### Static RAG response cache
+
+When `ENABLE_SUPPORT_RAG_RESPONSE_CACHE=true`, the support route may reuse
+successful knowledge-base-only answers. The flag defaults to false. The route
+still runs the source planner and verifies the current knowledge-index
+authority before checking Redis; a cache hit skips retrieval and answer
+generation, not the live-data decision.
+
+A request is eligible only when the planner confidently selects no live-data
+intent and requires RAG, deterministic checks find no live-data request, and
+the request has no conversation history, conversation ID, or user ID. The
+current knowledge version must also validate. Public catalogue requests,
+private live-data requests, mixed-source answers, uncertain planner results,
+fallbacks, and unsupported answers bypass caching.
+
+The versioned SHA-256 key includes the normalized question, audience,
+knowledge area and version, intent and answer prompt versions, configured
+provider/model, response-schema version, and retrieval settings. It does not
+include planner-generated query wording, so equivalent requests do not miss
+because of harmless planner variation. Only an `answered` response with
+valid knowledge citations, the verified version, and no live-data markers or
+warnings can be stored. Request IDs are cleared before storage and set to the
+current request on a hit.
+
+Entries expire after `SUPPORT_RAG_RESPONSE_CACHE_TTL_SECONDS` (default 900
+seconds). Redis single-flight locks use owner tokens and configurable TTL and
+wait limits. Redis failures fail open to the normal support flow. Live-data
+answers remain uncached regardless of this feature flag.
+
+Targeted support-cache, support-route, and service tests passed on 19 Nov 2026
+(33 passed).
 
 ### Multi-source execution flow
 

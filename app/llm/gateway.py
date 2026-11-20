@@ -39,7 +39,7 @@ def _increase_completion_budget(kwargs: dict[str, object]) -> dict[str, object]:
     return retry_kwargs
 
 
-def _build_structured_prompt(prompt: str, response_model: type[T]) -> str:
+def _build_structured_prompt[T](prompt: str, response_model: type[T]) -> str:
     schema = json.dumps(
         response_model.model_json_schema(),
         separators=(",", ":"),

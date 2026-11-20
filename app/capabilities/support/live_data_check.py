@@ -161,19 +161,16 @@ def is_live_data_question(question: str) -> bool:
     """True when wording explicitly requests current, personal marketplace data."""
     if not question:
         return False
-    
+
     if _requests_current_state(question):
         return True
-    
+
     # Detect explicit personal list requests before the knowledge-topic gate.
     # Mixed questions may contain both booking and policy ketworrds.
     if any(pattern.search(question) for pattern in _PERSONAL_LIST_PATTERNS):
         return True
-    
+
     if is_general_process_question(question):
         return False
-    
-    return any(
-        pattern.search(question)
-        for pattern in _PERSONAL_STATE_PATTERNS
-    )
+
+    return any(pattern.search(question) for pattern in _PERSONAL_STATE_PATTERNS)

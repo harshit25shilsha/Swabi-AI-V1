@@ -214,9 +214,7 @@ def _message_supports_numeric_date(message: str, value: date | None) -> bool:
         except ValueError:
             continue
 
-    return value.day in numbers and (
-        value.year in numbers or value.year % 100 in numbers
-    )
+    return value.day in numbers and (value.year in numbers or value.year % 100 in numbers)
 
 
 def _build_enquiry_title(extraction: EnquiryExtraction) -> str:
@@ -408,10 +406,7 @@ def _normalize_special_requests(value: str) -> str | None:
         normalized = [
             detail
             for detail in normalized
-            if not any(
-                detail.casefold().startswith(f"{room.casefold()} in ")
-                for room in room_only
-            )
+            if not any(detail.casefold().startswith(f"{room.casefold()} in ") for room in room_only)
         ]
 
     return "; ".join(normalized) or None
@@ -484,16 +479,10 @@ def _apply_semantic_preservation(message: str, extraction: EnquiryExtraction) ->
             re.IGNORECASE,
         )
 
-        hotel_label = (
-            f"{hotel_rating_match.group(1)}-star Hotel"
-            if hotel_rating_match
-            else "Hotel"
-        )
+        hotel_label = f"{hotel_rating_match.group(1)}-star Hotel" if hotel_rating_match else "Hotel"
 
         resort_label = (
-            f"{resort_rating_match.group(1)}-star Resort"
-            if resort_rating_match
-            else "Resort"
+            f"{resort_rating_match.group(1)}-star Resort" if resort_rating_match else "Resort"
         )
 
         if not resort_rating_match and ratings and not hotel_rating_match:
@@ -509,11 +498,7 @@ def _apply_semantic_preservation(message: str, extraction: EnquiryExtraction) ->
             resort_label = resort_label.replace("Resort", "Mountain Resort")
             _append_unique(extraction.tags, "mountain")
 
-        separator = (
-            " or "
-            if re.search(r"\bor\b", normalized)
-            else " and "
-        )
+        separator = " or " if re.search(r"\bor\b", normalized) else " and "
 
         req.accommodation = f"{hotel_label}{separator}{resort_label}"
 
@@ -529,9 +514,7 @@ def _apply_semantic_preservation(message: str, extraction: EnquiryExtraction) ->
         req.accommodation = f"{luxury}{rating_text + ' ' if rating_text else ''}Resort"
 
         extraction.property_type = (
-            PropertyType.RESORT_AND_HOUSEBOAT.value
-            if has_houseboat
-            else PropertyType.RESORT.value
+            PropertyType.RESORT_AND_HOUSEBOAT.value if has_houseboat else PropertyType.RESORT.value
         )
 
     elif has_hotel:
@@ -546,8 +529,6 @@ def _apply_semantic_preservation(message: str, extraction: EnquiryExtraction) ->
 
     for rating in ratings:
         _append_unique(extraction.tags, f"{rating}-star")
-
-
 
     if has_houseboat:
         _append_unique(req.activities, "Houseboat Stay")
@@ -670,8 +651,6 @@ def _apply_semantic_preservation(message: str, extraction: EnquiryExtraction) ->
         if detail:
             special_requests = _append_special_request(special_requests, detail)
 
-
-
     preference_patterns = (
         r"\bpeaceful(?:\s+locations?)?\b",
         r"\bnot\s+too\s+crowded\b",
@@ -684,6 +663,7 @@ def _apply_semantic_preservation(message: str, extraction: EnquiryExtraction) ->
             special_requests = f"{special_requests}; {match.group().strip()}".strip("; ")
 
     req.special_requests = _normalize_special_requests(special_requests)
+
 
 _MONEY_TOKEN = (
     r"(?:₹\s*)?"
@@ -702,6 +682,7 @@ def _money_value(match: re.Match[str]) -> float:
         amount *= 100_000
 
     return amount
+
 
 def _apply_budget_fallback(
     message: str,
@@ -758,7 +739,7 @@ def _apply_budget_fallback(
     range_values = None
 
     for first, second in zip(amounts, amounts[1:], strict=False):
-        connector = context[first.end():second.start()]
+        connector = context[first.end() : second.start()]
 
         if re.fullmatch(
             r"\s*(?:and|to|[-–—])\s*",
@@ -772,10 +753,7 @@ def _apply_budget_fallback(
             break
 
     if range_values is not None:
-        if (
-            extraction.budget_range_min is None
-            or extraction.budget_range_max is None
-        ):
+        if extraction.budget_range_min is None or extraction.budget_range_max is None:
             extraction.budget_range_min = min(range_values)
             extraction.budget_range_max = max(range_values)
 
@@ -845,12 +823,8 @@ def detect_missing_fields(extraction: EnquiryExtraction) -> list[str]:
     if extraction.travelers is None:
         missing.append(FIELD_TRAVELERS)
 
-    has_budget = (
-        extraction.budget is not None
-        and extraction.budget.amount is not None
-    ) or (
-        extraction.budget_range_min is not None
-        and extraction.budget_range_max is not None
+    has_budget = (extraction.budget is not None and extraction.budget.amount is not None) or (
+        extraction.budget_range_min is not None and extraction.budget_range_max is not None
     )
 
     if not has_budget:
@@ -959,7 +933,6 @@ def understand(
     # Always use a deterministic title instead of trusting inconsistent
     # free-form LLM title generation.
     extraction.title = _build_enquiry_title(extraction)
-
 
     missing = detect_missing_fields(extraction)
     questions = generate_clarifying_questions(missing)

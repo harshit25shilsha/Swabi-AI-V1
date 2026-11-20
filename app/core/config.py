@@ -80,6 +80,13 @@ class Settings(BaseSettings):
     # for the in-flight owner instead of issuing a second provider call.
     enquiry_response_cache_lock_ttl_seconds: int = Field(default=210, ge=1)
     enquiry_response_cache_lock_wait_seconds: float = Field(default=210.0, ge=0.0)
+    enable_support_rag_response_cache: bool = False
+    support_rag_response_cache_ttl_seconds: int = Field(default=900, ge=1)
+    support_rag_response_cache_lock_ttl_seconds: int = Field(default=210, ge=1)
+    support_rag_response_cache_lock_wait_seconds: float = Field(
+        default=210.0,
+        ge=0.0,
+    )
 
     # Guardrail service (inbound auth for /api/v1/validate-message)
     guardrail_api_token: str  # required

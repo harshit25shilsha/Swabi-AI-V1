@@ -82,9 +82,7 @@ def test_vendor_asking_customer_scope(retriever, patch_version_ok):
     assert r.answer_type == AnswerType.NEEDS_LIVE_DATA
 
 
-def test_source_planner_failure_falls_back_to_rag_with_warning(
-    retriever, patch_version_ok
-):
+def test_source_planner_failure_falls_back_to_rag_with_warning(retriever, patch_version_ok):
     with (
         patch("app.capabilities.support.service._get_resolver") as resolver,
         patch("app.capabilities.support.service.fetch_for_intent") as fetch,
@@ -274,8 +272,7 @@ def test_coins_balance_and_bidding_workflow_use_both_sources(
         response = ask(
             SupportAskRequest(
                 question=(
-                    "provide me my swabi coins balance and how bidding works "
-                    "in this platform"
+                    "provide me my swabi coins balance and how bidding works in this platform"
                 ),
                 audience=Audience.CUSTOMER,
             ),

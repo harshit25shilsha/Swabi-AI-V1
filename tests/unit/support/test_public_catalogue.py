@@ -616,9 +616,7 @@ def test_mixed_package_search_keeps_live_catalogue_and_knowledge_answer(
     assert response.retrieval_mode_used == "hybrid_live"
     assert "PKG-922" in response.answer
     assert "Vendors bid on enquiries" in response.answer
-    assert [citation.chunk_id for citation in response.citations] == [
-        "bidding-workflow"
-    ]
+    assert [citation.chunk_id for citation in response.citations] == ["bidding-workflow"]
 
 
 def test_package_detail_formatter_produces_expected_shape():

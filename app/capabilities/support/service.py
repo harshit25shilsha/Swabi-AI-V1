@@ -26,13 +26,14 @@ import logging
 import re
 import threading
 import time
+from dataclasses import dataclass
 
 from app.capabilities.support.forbidden import (
     has_financial_promise,
     strip_forbidden_paths,
 )
 from app.capabilities.support.intent_llm import LLMIntentClassifier
-from app.capabilities.support.intent_resolver import IntentResolver
+from app.capabilities.support.intent_resolver import IntentResolver, ResolvedIntent
 from app.capabilities.support.live_data import (
     LiveDataFetchError,
     fetch_for_intent,
@@ -65,7 +66,7 @@ from app.core.config import settings
 from app.llm.gateway import LLMGateway
 from app.rag.retriever import RagRetriever, RetrieverError
 from app.rag.schemas import RetrievedChunk
-from app.rag.version_check import check_version_authority
+from app.rag.version_check import VersionStatus, check_version_authority
 
 log = logging.getLogger(__name__)
 
@@ -339,6 +340,59 @@ def _get_retriever() -> RagRetriever:
     return _default_retriever
 
 
+@dataclass
+class SupportAskPlan:
+    resolved: ResolvedIntent
+    cache_eligible: bool = False
+    retriever: RagRetriever | None = None
+    version_status: VersionStatus | None = None
+
+
+def prepare_support_ask(request: SupportAskRequest) -> SupportAskPlan:
+    """Resolve sources once and identify safe static-RAG cache candidates."""
+    intent_started = time.perf_counter()
+    resolved = _get_resolver().resolve(
+        request.question,
+        request.audience.value,
+        conversation_history=request.conversation_history,
+    )
+    _log_support_stage(
+        "intent_resolution",
+        intent_started,
+        intent=resolved.intent.value,
+        intent_source=resolved.source,
+        use_rag=resolved.use_rag,
+    )
+
+    plan = SupportAskPlan(resolved=resolved)
+    static_knowledge_request = (
+        resolved.intent == LiveDataIntent.NONE
+        and resolved.source == "llm"
+        and resolved.reason == "llm_none"
+        and resolved.use_rag is True
+        and not is_live_data_question(request.question)
+        and not request.conversation_history
+        and request.conversation_id is None
+        and request.user_id is None
+    )
+    if not static_knowledge_request:
+        return plan
+
+    retriever = _get_retriever()
+    version_started = time.perf_counter()
+    version_status = check_version_authority(store=retriever.store)
+    _log_support_stage(
+        "knowledge_version_check",
+        version_started,
+        version_ok=version_status.ok,
+        cache_candidate=True,
+    )
+    plan.retriever = retriever
+    plan.version_status = version_status
+    plan.cache_eligible = bool(version_status.ok and version_status.local_version)
+    return plan
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -349,6 +403,7 @@ def ask(
     *,
     retriever: RagRetriever | None = None,
     user_jwt: str | None = None,
+    plan: SupportAskPlan | None = None,
 ) -> SupportAskResponse:
     """Answer a support question with the planned live-data and RAG sources."""
     q_hash = _question_hash(request.question)
@@ -364,10 +419,14 @@ def ask(
     # 1. Resolve intent semantically, retaining deterministic scope guards.
     # ------------------------------------------------------------------
     intent_started = time.perf_counter()
-    resolved = _get_resolver().resolve(
-        request.question,
-        audience,
-        conversation_history=request.conversation_history,
+    resolved = (
+        plan.resolved
+        if plan is not None
+        else _get_resolver().resolve(
+            request.question,
+            audience,
+            conversation_history=request.conversation_history,
+        )
     )
     requested_limit = getattr(resolved, "requested_limit", None)
     if not isinstance(requested_limit, int) or isinstance(requested_limit, bool):
@@ -377,18 +436,17 @@ def ask(
     summarize_payment_history = (
         resolved.intent == LiveDataIntent.MY_PAYMENTS and requested_limit is None
     )
-    _log_support_stage(
-        "intent_resolution",
-        intent_started,
-        intent=resolved.intent.value,
-        intent_source=resolved.source,
-        use_rag=resolved.use_rag,
-    )
+    if plan is None:
+        _log_support_stage(
+            "intent_resolution",
+            intent_started,
+            intent=resolved.intent.value,
+            intent_source=resolved.source,
+            use_rag=resolved.use_rag,
+        )
     use_rag = resolved.use_rag is True
     if resolved.reason == "llm_unavailable":
-        live_data_warning = (
-            "The source planner was unavailable; this answer may omit live data."
-        )
+        live_data_warning = "The source planner was unavailable; this answer may omit live data."
 
     # Recognized live-data intents whose backend integration is not wired yet.
     if resolved.intent in _NOT_YET_IMPLEMENTED:
@@ -581,20 +639,29 @@ def ask(
     # 5. Check knowledge authority only when this request needs RAG.
     # ------------------------------------------------------------------
     should_retrieve = resolved.intent == LiveDataIntent.NONE or use_rag
-    r = retriever or (_get_retriever() if should_retrieve else None)
+    r = (
+        retriever
+        or (plan.retriever if plan is not None else None)
+        or (_get_retriever() if should_retrieve else None)
+    )
     knowledge_version = ""
     version_ok = False
     if should_retrieve:
         assert r is not None
         version_started = time.perf_counter()
-        version = check_version_authority(store=r.store)
+        version = (
+            plan.version_status
+            if plan is not None and plan.retriever is r and plan.version_status is not None
+            else check_version_authority(store=r.store)
+        )
         knowledge_version = version.local_version
         version_ok = version.ok
-        _log_support_stage(
-            "knowledge_version_check",
-            version_started,
-            version_ok=version_ok,
-        )
+        if plan is None or plan.version_status is None or plan.retriever is not r:
+            _log_support_stage(
+                "knowledge_version_check",
+                version_started,
+                version_ok=version_ok,
+            )
 
         if not version_ok and not live_data_used:
             log.warning(
@@ -830,11 +897,7 @@ def ask(
         requested_limit is not None
         and live_data_used
         and live_text
-        and not (
-            resolved.intent == LiveDataIntent.PACKAGE_SEARCH
-            and use_rag
-            and chunks
-        )
+        and not (resolved.intent == LiveDataIntent.PACKAGE_SEARCH and use_rag and chunks)
     ):
         expected_items = _list_item_count(live_text)
         generated_items = _list_item_count(llm_out.answer)
