@@ -29,11 +29,21 @@ class SupportAskRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=2000)
     audience: Audience
     knowledge_area: KnowledgeArea | None = None
-    conversation_id: str | None = None
+
+    conversation_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        description="Conversation ID returned by a previous support response.",
+    )
+
+    # Temporary backward compatibility.
+    # Redis-managed history will replace client-supplied history in Step 2.
     conversation_history: list[ConversationTurn] = Field(
         default_factory=list,
         max_length=10,
     )
+
     user_id: str | None = None
 
 
@@ -45,6 +55,11 @@ class Citation(BaseModel):
 
 
 class SupportAskResponse(BaseModel):
+    conversation_id: str | None = Field(
+        default=None,
+        description="Conversation ID to reuse for subsequent support questions.",
+    )
+
     answer: str
     answer_type: AnswerType
     citations: list[Citation] = Field(default_factory=list)

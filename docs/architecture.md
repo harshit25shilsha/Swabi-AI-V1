@@ -743,6 +743,90 @@ audience; the request-body `audience` must match it. The original user
 the support service only for delegated live API calls. NestJS remains
 responsible for resource authorization and business state.
 
+### Server-managed conversation lifecycle
+
+Multi-turn Support is available only when gateway authentication supplies a
+verified principal subject. NestJS validates the user's JWT and constructs that
+principal; FastAPI never trusts `user_id` or history provided by the request
+body for conversation ownership.
+
+```text
+Browser -- JWT --> NestJS gateway -- signed principal + JWT --> AI Support
+                                                                 |
+                                 principal.sub + audience + conversation_id
+                                                                 |
+                                                                 v
+                                                       Redis conversation list
+                                                                 |
+                                  bounded history ---------------+
+                                                                 |
+                                                    plan / live read / answer
+                                                                 |
+                                 atomically append user + assistant turns
+```
+
+1. A new request omits `conversation_id`; Support creates a UUID and starts
+   with no history.
+2. A follow-up provides the returned ID. Support derives a Redis key from the
+   SHA-256 hash of the verified subject, verified audience, and ID, then loads
+   the most recent configured exchanges.
+3. After an answer is produced, one Redis transaction appends the user and
+   assistant turns, trims the list to `SUPPORT_CONVERSATION_MAX_TURNS * 2`
+   messages, and resets the inactivity expiry.
+4. The response always returns the conversation ID for the next request.
+
+The key format is
+`swabi:support:conversation:v1:<user-sha256>:<audience>:<conversation-id>`.
+It contains serialized `{role, content}` turns only: no raw user ID, JWT, or
+gateway secret. Redis unavailability fails open: Support can still answer, but
+the request has no persisted conversation context. A persistence failure is
+logged for operations to investigate.
+
+`AI_AUTH_MODE=legacy_service_token` deliberately yields no trusted principal
+subject. It must therefore not be used to validate server-managed multi-turn
+behavior; in that mode Support neither loads nor appends Redis conversation
+history. Its request `conversation_history` field is transitional
+compatibility only.
+
+#### NestJS implementation responsibilities
+
+For each Support request, NestJS must:
+
+1. Validate the browser JWT and derive the user ID, audience, and permitted
+   `ai:support:ask` scope.
+2. Forward the original JWT in `Authorization` and attach the signed,
+   short-lived principal headers described in
+   [`auth_gateway_contract.md`](auth_gateway_contract.md).
+3. Forward the request body's `conversation_id` unchanged when it is a
+   follow-up; never accept a browser-supplied principal header.
+4. Return the AI response's `conversation_id` to the client and reuse it only
+   for the same signed-in user and audience.
+
+The AI service enforces ownership by the scoped Redis key. A copied ID used by
+another user or audience resolves to a different key and cannot reveal the
+original conversation.
+
+#### Operational acceptance check
+
+After a gateway-mode first turn and one follow-up using the same returned
+`conversation_id`, Redis should contain one conversation list with four
+messages. Operators can inspect it without needing the raw user ID:
+
+```redis
+SCAN 0 MATCH swabi:support:conversation:v1:* COUNT 100
+TYPE <key>
+LLEN <key>
+LRANGE <key> 0 -1
+TTL <key>
+```
+
+Expected results are `list`, `4`, alternating serialized `user` and
+`assistant` turns, and a positive TTL close to
+`SUPPORT_CONVERSATION_TTL_SECONDS`. A later exchange increments the list by
+two; after the configured limit is reached, the oldest exchange is trimmed.
+The application startup log must also show that Redis connected. Do not use
+`KEYS *` in production; `SCAN` is incremental and safe for this diagnostic.
+
 ### Routing and answer source
 
 The service creates a structured source plan before fetching live data or
@@ -767,14 +851,14 @@ retrieving knowledge:
    questions fail safely with audience-specific guidance rather than
    invented facts.
 
-The request may include up to 10 recent user/assistant turns to resolve
-follow-ups. Context helps interpret references and constraints but cannot
-change the authenticated identity, audience, or access scope. Broad payment
-history requests may summarize up to 20 available records when no count is
-specified; other unspecified lists default to five. Live-only requests avoid
-RAG/Qdrant checks when the source plan identifies no knowledge need. The
-source planner is invoked for both simple and compound requests, including
-unfiltered catalogue requests.
+Gateway-mode follow-ups load up to 10 recent user/assistant turns from the
+server-managed Redis conversation list. Context helps interpret references and
+constraints but cannot change the authenticated identity, audience, or access
+scope. Broad payment-history requests may summarize up to 20 available
+records when no count is specified; other unspecified lists default to five.
+Live-only requests avoid RAG/Qdrant checks when the source plan identifies no
+knowledge need. The source planner is invoked for both simple and compound
+requests, including unfiltered catalogue requests.
 
 Live transport currently resides in
 `app/capabilities/support/live_data.py`. It calls NestJS, forwards the

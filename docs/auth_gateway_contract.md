@@ -57,3 +57,28 @@ Missing/malformed Bearer token, missing assertion, invalid signature, expired
 assertion, or malformed principal returns `401` with `WWW-Authenticate:
 Bearer`. A valid principal lacking the route scope returns `403`. For Support,
 a body `audience` that differs from the verified principal returns `403`.
+
+## Support multi-turn contract
+
+NestJS should treat `conversation_id` as an opaque value returned by the AI
+service. For a new Support request, omit it. Return the response's
+`conversation_id` to the browser; for a follow-up, send it back unchanged in
+the next request body along with a freshly signed principal assertion.
+
+```json
+{
+  "question": "Show me the latest two.",
+  "audience": "customer",
+  "conversation_id": "fe3dca3d-7a85-4475-9348-f1a273858ab8"
+}
+```
+
+The AI service derives conversation ownership from `sub` and `audience` in
+the verified assertion, not from the browser. It persists bounded history in
+Redis under a key that hashes `sub`; raw user IDs and JWTs are not stored.
+Reusing an ID under another user or audience cannot retrieve the original
+history because it maps to a separate scoped key.
+
+NestJS must generate a new assertion for each proxied request. It must not
+allow public clients to provide or forward either `X-Swabi-Principal` header,
+and it must never expose `AI_GATEWAY_AUTH_SECRET` to browser code.

@@ -88,6 +88,13 @@ class Settings(BaseSettings):
         ge=0.0,
     )
 
+    # Support conversation storage
+    support_conversation_ttl_seconds: int = Field(
+        default=1800,
+        ge=60,
+    )
+    support_conversation_max_turns: int = Field(default=10, ge=1, le=50)
+
     # Guardrail service (inbound auth for /api/v1/validate-message)
     guardrail_api_token: str  # required
 

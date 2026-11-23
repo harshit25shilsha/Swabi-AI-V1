@@ -420,23 +420,52 @@ Content-Type: application/json
 }
 ```
 
-For multi-turn follow-ups, the caller may include up to 10 recent turns:
+### Server-managed multi-turn conversations
+
+In gateway mode, Support conversation history is owned by the service, not by
+the browser. The first request omits `conversation_id`; the response returns a
+new ID. Every follow-up sends that ID with the same authenticated user and
+audience:
+
+```json
+{
+  "question": "Show my payment history",
+  "audience": "customer"
+}
+```
+
+```json
+{
+  "conversation_id": "fe3dca3d-7a85-4475-9348-f1a273858ab8",
+  "answer": "You have 20 payments: 17 completed and 3 pending..."
+}
+```
 
 ```json
 {
   "question": "Only show the latest two",
   "audience": "customer",
-  "conversation_history": [
-    {"role": "user", "content": "Show my payment history"},
-    {"role": "assistant", "content": "I found your payment history..."}
-  ]
+  "conversation_id": "fe3dca3d-7a85-4475-9348-f1a273858ab8"
 }
 ```
 
+The AI service derives the conversation owner from the verified gateway
+principal, hashes that ID, and stores a Redis list scoped by user, audience,
+and conversation ID. It loads bounded recent turns before planning and answer
+generation, then atomically appends the completed user/assistant exchange,
+trims old messages, and refreshes the inactivity TTL. The raw user ID and JWT
+are never written to Redis.
+
+Do not send `conversation_history` from browser clients in gateway mode; it is
+ignored for a new server-managed conversation and replaced with Redis history
+for a follow-up. The field remains only as temporary compatibility input in
+`legacy_service_token` mode, which cannot establish a trusted user owner and
+therefore does not persist multi-turn history.
+
 The integration must bind the audience and JWT to the authenticated session
 and enforce role scope server-side; a client-supplied audience is not an
-authorization grant. Conversation history helps resolve references and
-constraints but never grants access or changes role scope.
+authorization grant. History helps resolve references and constraints but
+never grants access or changes role scope.
 
 The route requires a user bearer token. Private live-data calls forward that
 token to NestJS, where authorization remains authoritative. Public catalogue
@@ -455,8 +484,8 @@ Swabi database directly.
   audience scope; authorized facts are fetched from NestJS and combined with
   approved RAG evidence when both are needed. The answer LLM receives only
   allowlisted live fields and retrieved knowledge.
-- **Conversation context and limits:** Clients may send up to 10 recent
-  `conversation_history` turns (`user` or `assistant`, at most 2,000
+- **Conversation context and limits:** Gateway-mode requests use up to 10
+  recent server-managed Redis turns (`user` or `assistant`, at most 2,000
   characters each). Explicit list limits are applied before answer generation;
   over-limit generated lists fall back to the exact trimmed live results.
   Broad payment-history requests summarize up to 20 available records and
@@ -670,8 +699,10 @@ AI_GATEWAY_AUTH_SECRET=<new-shared-gateway-secret>
 
 In legacy mode, Chat Safety and Enquiry use `GUARDRAIL_API_TOKEN`. Support
 accepts a non-empty Bearer token and forwards it for live reads, but its
-KB-only path is not truly JWT-verified. Do not retain this mode for production
-after NestJS gateway integration is available.
+KB-only path is not truly JWT-verified. Because it has no verified principal
+subject, Support also cannot store or load server-managed conversation history.
+Do not retain this mode for production after NestJS gateway integration is
+available.
 
 ### Legacy behavior retained during migration
 
@@ -849,6 +880,8 @@ Key settings:
 | `RAG_RERANKER_MODEL` | `Xenova/ms-marco-MiniLM-L-6-v2` | Local reranker model used when enabled. |
 | `LOG_FORMAT` | `json` | `json` or `text` |
 | `REDIS_URL` | `redis://localhost:6379/0` | Empty disables Redis |
+| `SUPPORT_CONVERSATION_TTL_SECONDS` | `1800` | Inactivity TTL for a server-managed support conversation; minimum 60 seconds. |
+| `SUPPORT_CONVERSATION_MAX_TURNS` | `10` | Maximum retained exchanges per conversation; Redis retains twice this number of messages. |
 | `ENABLE_ENQUIRY_RESPONSE_CACHE` | `false` | Enables Redis caching for successful enquiry-understanding responses. |
 | `ENQUIRY_RESPONSE_CACHE_TTL_SECONDS` | `900` | Lifetime of an enquiry response cache entry. |
 | `ENQUIRY_RESPONSE_CACHE_LOCK_TTL_SECONDS` | `210` | Ownership-lock lifetime for an in-flight enquiry request. |

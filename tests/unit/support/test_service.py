@@ -9,6 +9,7 @@ import pytest
 from app.capabilities.support.live_data_classifier import LiveDataIntent
 from app.capabilities.support.schemas import (
     AnswerType,
+    ConversationTurn,
     LLMAnswerOutput,
     SupportAskRequest,
 )
@@ -67,6 +68,33 @@ def patch_version_ok():
 # ---------------------------------------------------------------------------
 # Live-data short-circuits before anything else
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "what query i send you last?",
+        "so what i asked you previously in this conversation?",
+    ],
+)
+def test_explicit_last_question_uses_prior_user_turn_without_rag(retriever, question):
+    response = ask(
+        SupportAskRequest(
+            question=question,
+            audience=Audience.CUSTOMER,
+            conversation_history=[
+                ConversationTurn(role="user", content="What is the cancellation policy?"),
+                ConversationTurn(role="assistant", content="It depends on the cancellation date."),
+            ],
+        ),
+        retriever=retriever,
+    )
+
+    assert response.answer_type == AnswerType.ANSWERED
+    assert response.answer == 'Your last question was: "What is the cancellation policy?"'
+    assert response.citations == []
+    assert response.retrieval_mode_used == "not_applicable"
+    retriever.search.assert_not_called()
 
 
 def test_live_data_returns_needs_live_data(retriever, patch_version_ok):

@@ -110,6 +110,15 @@ _UNSUPPORTED_PACKAGE_FILTER_REQUEST = re.compile(
     re.IGNORECASE,
 )
 _LIST_ITEM_LINE = re.compile(r"(?m)^\s*(?:[-*]|\d+[.)])\s+")
+_CONVERSATION_RECALL_NOUNS = re.compile(
+    r"\b(?:question|query|message|thing\s+(?:i|we)\s+(?:said|asked|sent))\b",
+    re.IGNORECASE,
+)
+_CONVERSATION_RECALL_TIME = re.compile(r"\b(?:last|previous|prior|before)\b", re.IGNORECASE)
+_CONVERSATION_RECALL_ACTION = re.compile(
+    r"\b(?:did\s+)?(?:i|we)\s+(?:ask|say|send|write|tell)\b",
+    re.IGNORECASE,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -118,6 +127,28 @@ _LIST_ITEM_LINE = re.compile(r"(?m)^\s*(?:[-*]|\d+[.)])\s+")
 
 def _question_hash(question: str) -> str:
     return hashlib.sha256(question.encode("utf-8")).hexdigest()[:16]
+
+
+def _last_user_question_from_history(
+    question: str,
+    history: list[ConversationTurn],
+) -> str | None:
+    """Return the prior user question for an explicit conversation-recall request.
+
+    Conversation history is normally context only, rather than grounding for
+    support facts.  This narrow exception answers a request whose only fact is
+    the caller's own immediately preceding message.
+    """
+    has_recall_time = _CONVERSATION_RECALL_TIME.search(question) is not None
+    has_recall_subject = _CONVERSATION_RECALL_NOUNS.search(question) is not None
+    has_recall_action = _CONVERSATION_RECALL_ACTION.search(question) is not None
+    if not has_recall_time or not (has_recall_subject or has_recall_action):
+        return None
+
+    for turn in reversed(history):
+        if turn.role == "user":
+            return turn.content
+    return None
 
 
 def _insufficient_message(audience: str) -> str:
@@ -409,6 +440,22 @@ def ask(
     q_hash = _question_hash(request.question)
     audience = request.audience.value
     area_hint = request.knowledge_area.value if request.knowledge_area else None
+
+    last_question = _last_user_question_from_history(
+        request.question,
+        request.conversation_history,
+    )
+    if last_question is not None:
+        return SupportAskResponse(
+            answer=f'Your last question was: "{last_question}"',
+            answer_type=AnswerType.ANSWERED,
+            citations=[],
+            confidence=1.0,
+            retrieval_mode_used="not_applicable",
+            knowledge_version="",
+            provider="",
+            prompt_version=SUPPORT_PROMPT_VERSION,
+        )
 
     live_text: str | None = None
     live_data_used = False

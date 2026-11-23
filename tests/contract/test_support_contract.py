@@ -1,4 +1,4 @@
-"""Public contract lock: 12 fields now (was 9)."""
+"""Public contract lock: 13 fields now (was 9)."""
 
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ def test_response_field_set_locked(monkeypatch):
             json={"question": "hi", "audience": "customer"},
         )
     expected = {
+        "conversation_id",
         "answer",
         "answer_type",
         "citations",
