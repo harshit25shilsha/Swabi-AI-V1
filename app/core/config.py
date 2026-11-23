@@ -118,7 +118,7 @@ class Settings(BaseSettings):
     # settings.GROQ_API_KEY etc. Lower-case field names remain canonical.
 
     # RAG — embeddings + Qdrant
-    qdrant_url: str = "http://localhost:6333"
+    qdrant_url: str = ""
     qdrant_api_key: str = ""
     qdrant_collection: str = "swabi_chunks"
     qdrant_timeout: int = 30

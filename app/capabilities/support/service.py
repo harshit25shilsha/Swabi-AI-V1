@@ -116,7 +116,8 @@ _CONVERSATION_RECALL_NOUNS = re.compile(
 )
 _CONVERSATION_RECALL_TIME = re.compile(r"\b(?:last|previous|prior|before)\b", re.IGNORECASE)
 _CONVERSATION_RECALL_ACTION = re.compile(
-    r"\b(?:did\s+)?(?:i|we)\s+(?:ask|say|send|write|tell)\b",
+    r"\b(?:did\s+)?(?:i|we)\s+"
+    r"(?:ask(?:ed)?|say|said|send|sent|write|wrote|tell|told)\b",
     re.IGNORECASE,
 )
 

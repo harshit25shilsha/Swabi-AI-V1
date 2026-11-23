@@ -279,11 +279,6 @@ async def support_ask(
             planning_payload,
         )
 
-        plan = await asyncio.to_thread(
-            prepare_support_ask,
-            planning_payload,
-        )
-
         if plan.cache_eligible and plan.version_status is not None:
             cache_key = _support_cache_key(payload, plan)
             cache_knowledge_version = plan.version_status.local_version
