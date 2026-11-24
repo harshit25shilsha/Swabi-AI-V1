@@ -34,6 +34,7 @@ from app.core.logging import request_id_var, setup_logging
 from app.core.redis import redis_manager
 from app.llm.groq import close_sync_client
 from app.observability.middleware import ObservabilityMiddleware
+from app.swabi.read_transport import close_read_client 
 
 setup_logging()
 
@@ -115,6 +116,7 @@ async def lifespan(app: FastAPI):
 
     finally:
         close_live_data_client()
+        close_read_client()
         close_sync_client()
         await redis_manager.close()
 
