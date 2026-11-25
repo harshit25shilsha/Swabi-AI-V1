@@ -1,11 +1,12 @@
 """Thin CLI for Phase 2 RAG ingestion.
 
-    python scripts/rag_ingest.py --verify-config
-    python scripts/rag_ingest.py --dry-run
-    python scripts/rag_ingest.py               # non-release build
-    python scripts/rag_ingest.py --release     # blocks on unconfirmed flags
-                                               # or over-cap chunks
+python scripts/rag_ingest.py --verify-config
+python scripts/rag_ingest.py --dry-run
+python scripts/rag_ingest.py               # non-release build
+python scripts/rag_ingest.py --release     # blocks on unconfirmed flags
+                                           # or over-cap chunks
 """
+
 from __future__ import annotations
 
 import argparse
@@ -42,9 +43,11 @@ def main(argv=None) -> int:
         if args.verify_config:
             cfg = load_config(args.config)
             validate_config(cfg, release=args.release)
-            print(f"config ok: {len(cfg['sections'])} sections, "
-                  f"{len(cfg['categories'])} categories, "
-                  f"release={'yes' if args.release else 'no'}")
+            print(
+                f"config ok: {len(cfg['sections'])} sections, "
+                f"{len(cfg['categories'])} categories, "
+                f"release={'yes' if args.release else 'no'}"
+            )
             return 0
 
         result = ingest(
@@ -52,15 +55,19 @@ def main(argv=None) -> int:
             release=args.release,
             chunk_size_cap=args.chunk_size_cap,
         )
-        print(f"version={result.manifest.index_version} "
-              f"release={result.manifest.release} "
-              f"chunks={result.manifest.chunk_count} "
-              f"over_cap={len(result.report.over_cap)}")
+        print(
+            f"version={result.manifest.index_version} "
+            f"release={result.manifest.release} "
+            f"chunks={result.manifest.chunk_count} "
+            f"over_cap={len(result.report.over_cap)}"
+        )
         print(f"per_area={result.report.per_area}")
         print(f"per_audience={result.report.per_audience}")
-        print(f"excluded={len(result.report.excluded)} "
-              f"skipped={len(result.report.skipped)} "
-              f"warnings={len(result.report.warnings)}")
+        print(
+            f"excluded={len(result.report.excluded)} "
+            f"skipped={len(result.report.skipped)} "
+            f"warnings={len(result.report.warnings)}"
+        )
 
         if args.dry_run:
             print("[dry-run] no files written")
@@ -74,8 +81,7 @@ def main(argv=None) -> int:
             report=result.report,
             known_gaps=result.known_gaps,
         )
-        print(f"[ok] published to {args.output}/versions/"
-              f"{result.manifest.index_version}/")
+        print(f"[ok] published to {args.output}/versions/{result.manifest.index_version}/")
         return 0
     except (ConfigError, IngestError, PublishError) as exc:
         print(f"[error] {exc}", file=sys.stderr)

@@ -1,4 +1,5 @@
 """Dense embeddings via fastembed."""
+
 from __future__ import annotations
 
 import threading
@@ -73,10 +74,12 @@ class EmbeddingModel:
 
         model = self._get_model()
         vectors = np.asarray(
-            list(model.embed(
-                prefixed_texts,
-                batch_size=settings.rag_embedding_batch_size,
-            )),
+            list(
+                model.embed(
+                    prefixed_texts,
+                    batch_size=settings.rag_embedding_batch_size,
+                )
+            ),
             dtype="float32",
         )
 

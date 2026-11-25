@@ -6,14 +6,14 @@ runs it in a thread pool, matching the sync service chain.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Request
 
 from app.capabilities.enquiry.schemas import (
     EnquiryExtractRequest,
     EnquiryUnderstandResponse,
 )
 from app.capabilities.enquiry.service import understand
-from app.core.service_auth import verify_service_token
+from app.core.route_auth import require_user_capability
 
 router = APIRouter(prefix="/api/v1/enquiry", tags=["enquiry"])
 
@@ -21,7 +21,7 @@ router = APIRouter(prefix="/api/v1/enquiry", tags=["enquiry"])
 @router.post(
     "/understand",
     response_model=EnquiryUnderstandResponse,
-    dependencies=[Depends(verify_service_token)],
+    dependencies=[require_user_capability("ai:enquiry:understand")],
 )
 def understand_enquiry(
     payload: EnquiryExtractRequest,

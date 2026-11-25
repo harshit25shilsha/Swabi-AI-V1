@@ -1,4 +1,5 @@
 """Atomic versioned publication of ingestion artifacts."""
+
 from __future__ import annotations
 
 import json
@@ -53,29 +54,26 @@ def publish(
             encoding="utf-8",
         )
         (staging_dir / "index_version.json").write_text(
-            manifest.model_dump_json(indent=2) + "\n", encoding="utf-8",
+            manifest.model_dump_json(indent=2) + "\n",
+            encoding="utf-8",
         )
         (staging_dir / "known_gaps.json").write_text(
-            json.dumps(known_gaps, indent=2, ensure_ascii=False,
-                       sort_keys=True) + "\n",
+            json.dumps(known_gaps, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
             encoding="utf-8",
         )
         (staging_dir / "ingestion_report.json").write_text(
-            report.model_dump_json(indent=2) + "\n", encoding="utf-8",
+            report.model_dump_json(indent=2) + "\n",
+            encoding="utf-8",
         )
 
         # Validate reload
         payload = [
             Chunk.model_validate_json(line)
-            for line in (staging_dir / "chunks.jsonl").read_text(
-                encoding="utf-8"
-            ).splitlines()
+            for line in (staging_dir / "chunks.jsonl").read_text(encoding="utf-8").splitlines()
             if line.strip()
         ]
         if len(payload) != len(chunks):
-            raise PublishError(
-                f"chunk count mismatch after write: {len(payload)} != {len(chunks)}"
-            )
+            raise PublishError(f"chunk count mismatch after write: {len(payload)} != {len(chunks)}")
 
         if final_dir.exists():
             # Compare content; identical -> idempotent.
@@ -84,11 +82,10 @@ def publish(
                 for n in ("chunks.jsonl", "index_version.json", "known_gaps.json")
             )
             if not same:
-                raise PublishError(
-                    f"version {version} exists with different content"
-                )
+                raise PublishError(f"version {version} exists with different content")
             (final_dir / "ingestion_report.json").write_text(
-                report.model_dump_json(indent=2) + "\n", encoding="utf-8",
+                report.model_dump_json(indent=2) + "\n",
+                encoding="utf-8",
             )
             shutil.rmtree(staging_dir)
             _atomic_write(out_root / CURRENT_NAME, version + "\n")
