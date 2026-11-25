@@ -39,6 +39,9 @@ _DEFAULTS = {
     "GUARDRAIL_API_TOKEN": "test-guardrail-token",
     "SWABI_API_KEY": "test-swabi-key",
     "REDIS_URL": "",
+    # Existing tests exercise the legacy contract.  Gateway-mode behavior is
+    # covered explicitly by its own boundary tests.
+    "AI_AUTH_MODE": "legacy_service_token",
 }
 
 for _name, _value in _DEFAULTS.items():

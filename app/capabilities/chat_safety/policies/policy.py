@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from app.capabilities.chat_safety.schemas import (
     Action,
-    LLMResult,
     ModerationCategory,
 )
 
@@ -25,10 +24,9 @@ BLOCKED_CATEGORIES: set[ModerationCategory] = {
 }
 
 
-def apply_policy(
-    llm_result: LLMResult,
-) -> tuple[Action, ModerationCategory | None, float]:
-    """Convert an LLM classification into a final ALLOW/BLOCK decision."""
+def apply_policy(llm_result):
     if llm_result.decision == Action.BLOCK and llm_result.category in BLOCKED_CATEGORIES:
         return Action.BLOCK, llm_result.category, llm_result.confidence
+    if llm_result.decision == Action.REVIEW:
+        return Action.REVIEW, llm_result.category, llm_result.confidence
     return Action.ALLOW, None, llm_result.confidence

@@ -65,6 +65,9 @@ DISGUISED_MUST_BLOCK = [
     "do plus do, phir teen minus one, aur end mein nine",
     "kal jo sequence batayi thi—pehle chaar, phir eleven, thirteen, seventeen",
     "start with the number after five, then two less than ten, then twelve",
+    "ek room chahiye, do bed ke saath, teen raat ke liye, chaar log hain, "
+    "paach bje phuchenge, das bje khayenge, gyarah bje niklenge, "
+    "bara bje lunch karenge, pandrah minute late honge.",
 ]
 
 NORMAL_MUST_ALLOW = [

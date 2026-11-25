@@ -1,11 +1,13 @@
 """Chat Safety LLM classifier — provider ladder, circuits, consensus.
 
-Orchestrates the provider ladder (Groq → Gemini), per-provider circuit
-breakers, and the consensus loop. Public entry point:
-``moderate_with_llm(message) -> (LLMResult, provider_name)``.
+Orchestrates the provider ladder (Groq → Gemini, via
+``ChatSafetyLLMAdapter``), per-provider circuit breakers, and the
+consensus loop.
 
-NOTE: This module is temporary. Step 9 replaces it with an adapter over
-the shared LLMGateway, and deletes it.
+Public entry point: ``moderate_with_llm(message) -> (LLMResult, provider)``.
+
+Raises ``CircuitOpenError`` when every provider's circuit is open and no
+call is attempted.
 """
 
 from __future__ import annotations
@@ -16,10 +18,11 @@ import re
 
 from pydantic import ValidationError
 
+from app.capabilities.chat_safety.llm_adapter import get_adapter
 from app.capabilities.chat_safety.prompts import PROMPT_VERSION, SYSTEM_PROMPT
-from app.capabilities.chat_safety.providers import get_providers
 from app.capabilities.chat_safety.schemas import Action, LLMResult
 from app.core.config import settings
+from app.core.exceptions import CircuitOpenError
 from app.observability import counters
 from app.observability.circuit_breaker import CircuitBreaker
 
@@ -87,43 +90,59 @@ def _coerce_result(data: dict) -> LLMResult:
 def _classify_with_fallback(message: str) -> tuple[LLMResult, str]:
     """Walk the provider ladder. Returns (result, provider_name).
 
-    Raises if every provider fails or is circuit-open.
+    Raises:
+        RuntimeError: no providers are configured (should not happen in
+            production with a Groq key present).
+        CircuitOpenError: every provider's circuit was open; no call was
+            attempted.
+        Exception: every attempted provider failed; the last exception is
+            re-raised so the caller can decide the failure policy.
     """
-    providers = get_providers()
-    if not providers:
+    adapter = get_adapter()
+    provider_names = adapter.available_providers()
+
+    if not provider_names:
         raise RuntimeError("no LLM providers configured")
 
     last_exc: Exception | None = None
-    for provider in providers:
-        circuit = _get_circuit(provider.name)
+    any_attempted = False
+
+    for name in provider_names:
+        circuit = _get_circuit(name)
 
         if not circuit.allow_call():
             logger.info(
                 "provider_skipped_circuit_open",
-                extra={"provider": provider.name},
+                extra={"provider": name},
             )
             continue
 
+        any_attempted = True
         counters.increment("llm_calls_total")
-        counters.increment(f"llm_calls_by_provider:{provider.name}")
+        counters.increment(f"llm_calls_by_provider:{name}")
         try:
-            raw = provider.classify(SYSTEM_PROMPT, message)
+            raw = adapter.classify(name, SYSTEM_PROMPT, message)
             data = _parse_llm_json(raw)
             result = _coerce_result(data)
             circuit.record_success()
-            return result, provider.name
+            return result, name
         except Exception as e:
             circuit.record_failure()
             counters.increment("llm_failures_total")
-            counters.increment(f"llm_failures_by_provider:{provider.name}")
+            counters.increment(f"llm_failures_by_provider:{name}")
             logger.warning(
                 "provider_failed",
-                extra={"provider": provider.name, "error": str(e)},
+                extra={"provider": name, "error": str(e)},
             )
             last_exc = e
             continue
 
-    assert last_exc is not None  # noqa: S101  (fixed in step 9)
+    if not any_attempted:
+        # All circuits were open — no provider call was made. This is the
+        # signal the service layer expects so it can fail-open cleanly.
+        raise CircuitOpenError("all provider circuits are open")
+
+    assert last_exc is not None  # (loop invariant: any_attempted implies last_exc set)
     raise last_exc
 
 
@@ -149,7 +168,9 @@ def moderate_with_llm(message: str) -> tuple[LLMResult, str]:
         allows.append((result, provider))
 
     if not allows:
-        assert last_exc is not None  # noqa: S101  (fixed in step 9)
+        if last_exc is None:
+            # Loop invariant: attempts >= 1 always records last_exc on failure.
+            raise RuntimeError("consensus loop failed without capturing an exception")
         raise last_exc
 
     # highest-confidence ALLOW, keep its provider

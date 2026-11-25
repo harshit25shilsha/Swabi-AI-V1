@@ -76,7 +76,7 @@ def test_development_safe_defaults(env):
     assert s.llm_circuit_failure_threshold == 5
     assert s.llm_circuit_open_seconds == 60
     assert s.llm_temperature == 0.0
-    assert s.llm_max_tokens == 1024
+    assert s.llm_max_tokens == 512
     assert s.gemini_api_key == ""
     assert s.log_format == "json"
 
