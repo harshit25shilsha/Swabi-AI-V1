@@ -10,6 +10,10 @@ last_updated: "2026-10"
 categories:
   - "A"
   - "Travel"
+policy_categories:
+  - "A"
+non_policy_categories:
+  - "Travel"
 
 excluded_sections:
   - id: "9.9"
@@ -20,12 +24,20 @@ sections:
     category: "A"
     area: swabi
     audience: both
+    policy_lifecycle:
+      policy_id: alpha-policy
+      status: approved
+      effective_from: "2026-01-01"
 
   - id: "2.3"
     title: "Beta"
     category: "A"
     area: swabi
     audience: vendor
+    policy_lifecycle:
+      policy_id: beta-policy
+      status: approved
+      effective_from: "2026-01-01"
     skip_subsections:
       - "Plan discounts (proposed redesign)"
 

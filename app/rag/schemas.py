@@ -5,6 +5,7 @@ RetrievalResult) are preserved for the existing Retriever protocol.
 
 Phase 2 adds ingestion-side types used by the LangChain-based pipeline.
 """
+
 from __future__ import annotations
 
 from enum import StrEnum
@@ -32,8 +33,8 @@ class RetrievalResult(BaseModel):
     documents: list[RetrievedDocument] = Field(default_factory=list)
 
 
-
 # Phase 2 — ingestion types
+
 
 class KnowledgeArea(StrEnum):
     SWABI = "swabi"
@@ -55,6 +56,7 @@ class ReviewFlag(BaseModel):
 
 class ChunkMetadata(BaseModel):
     """Metadata for one indexed chunk."""
+
     chunk_id: str
     document_id: str
     category: str
@@ -66,6 +68,11 @@ class ChunkMetadata(BaseModel):
     source: str
     source_version: str
     last_updated: str
+    policy_id: str | None = None
+    policy_status: str = "not_applicable"
+    effective_from: str | None = None
+    expires_on: str | None = None
+    supersedes: list[str] = Field(default_factory=list)
     destination: str | None = None
     activity: str | None = None
     review_flags: list[ReviewFlag] = Field(default_factory=list)
@@ -78,6 +85,7 @@ class Chunk(BaseModel):
 
 class IndexVersion(BaseModel):
     """Manifest. Byte-stable across runs of identical inputs."""
+
     index_version: str
     pipeline_version: str
     source_path: str
@@ -92,6 +100,7 @@ class IndexVersion(BaseModel):
 
 class IngestionReport(BaseModel):
     """Run log. Contains built_at; not byte-stable."""
+
     built_at: str
     source_path: str
     source_hash: str
@@ -113,6 +122,7 @@ class IngestionReport(BaseModel):
 
 class RetrievedChunk(BaseModel):
     """One chunk returned from retrieval, before it becomes a citation."""
+
     chunk_id: str
     section_id: str
     section_path: str
