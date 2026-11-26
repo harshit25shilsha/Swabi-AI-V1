@@ -34,13 +34,22 @@ logger = logging.getLogger(__name__)
 _CACHE_NAMESPACE = "enquiry-understand:v1"
 
 
-def _cache_key(message: str, currency_hint: str | None) -> str:
+def _cache_key(
+    message: str,
+    currency_hint: str | None,
+    previous_extraction: object | None = None,
+) -> str:
     """Include every input/version that can affect an enquiry response."""
     return make_cache_key(
         _CACHE_NAMESPACE,
         {
             "message": normalize_message(message),
             "currency_hint": currency_hint.strip().upper() if currency_hint else None,
+            "previous_extraction": (
+                previous_extraction.model_dump(mode="json")
+                if hasattr(previous_extraction, "model_dump")
+                else previous_extraction
+            ),
             "model": settings.llm_model,
             "prompt_version": ENQUIRY_PROMPT_VERSION,
             "response_schema_version": "v1",
@@ -88,7 +97,11 @@ async def understand_enquiry(
     lock_token: str | None = None
     request_id = getattr(request.state, "request_id", "")
     if settings.enable_enquiry_response_cache:
-        key = _cache_key(payload.message, payload.currency_hint)
+        key = _cache_key(
+            payload.message,
+            payload.currency_hint,
+            payload.previous_extraction,
+        )
         cached = await _cached_result(key, request_id=request_id)
         if cached is not None:
             return cached
@@ -147,6 +160,7 @@ async def understand_enquiry(
             understand,
             payload.message,
             currency_hint=payload.currency_hint,
+            previous_extraction=payload.previous_extraction,
         )
 
         # Correlate with the outer request-id middleware.

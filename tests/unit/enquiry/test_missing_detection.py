@@ -14,6 +14,7 @@ from app.capabilities.enquiry.constants import (
     FIELD_TOUR_GUIDE,
     FIELD_TRANSPORT,
     FIELD_TRAVEL_DATE,
+    FIELD_TRAVEL_DATE_END,
     FIELD_TRAVELERS,
     FIELD_WHEN,
     MAX_CLARIFYING_QUESTIONS,
@@ -43,6 +44,7 @@ def _full_extraction() -> EnquiryExtraction:
         description="A brief description.",
         destination="Manali",
         travel_date="15/12/26",
+        travel_date_end="19/12/26",
         duration_days=5,
         duration_nights=4,
         travelers=4,
@@ -63,14 +65,12 @@ def _full_extraction() -> EnquiryExtraction:
 # ---------------------------------------------------------------------------
 
 
-def test_empty_extraction_flags_required_and_recommended_only():
+def test_empty_extraction_flags_all_nine_required_fields():
     missing = detect_missing_fields(EnquiryExtraction())
     for f in REQUIRED_FIELDS:
         assert f in missing, f"expected {f} in missing"
     for f in RECOMMENDED_FIELDS:
-        if f == FIELD_TRAVEL_DATE:
-            continue
-        assert f in missing, f"expected {f} in missing"
+        assert f not in missing, f"optional planning field {f} should not be missing"
     for f in OPTIONAL_FIELDS:
         assert f not in missing, f"optional field {f} should not be missing"
 
@@ -96,45 +96,21 @@ def test_full_extraction_has_no_missing():
 # ---------------------------------------------------------------------------
 
 
-def test_when_satisfied_by_travel_date_only():
+def test_start_date_does_not_satisfy_missing_end_date():
     e = EnquiryExtraction(travel_date="15/12/26")
-    assert FIELD_WHEN not in detect_missing_fields(e)
+    assert FIELD_TRAVEL_DATE_END in detect_missing_fields(e)
 
 
-def test_when_satisfied_by_duration_days_only():
-    e = EnquiryExtraction(duration_days=5)
-    assert FIELD_WHEN not in detect_missing_fields(e)
-
-
-def test_when_satisfied_by_duration_nights_only():
-    e = EnquiryExtraction(duration_nights=4)
-    assert FIELD_WHEN not in detect_missing_fields(e)
-
-
-def test_when_flagged_when_no_date_or_duration():
-    e = EnquiryExtraction()
-    assert FIELD_WHEN in detect_missing_fields(e)
-
-
-# ---------------------------------------------------------------------------
-# Askable vs required
-# ---------------------------------------------------------------------------
-
-
-def test_askable_duration_flagged_when_duration_missing():
-    e = EnquiryExtraction(travel_date="15/12/26")
-    missing = detect_missing_fields(e)
-    assert FIELD_DURATION in missing
-    assert FIELD_TRAVEL_DATE not in missing  # travel_date is present
-    assert FIELD_WHEN not in missing  # when is satisfied
-
-
-def test_askable_travel_date_flagged_when_date_missing():
+def test_duration_does_not_replace_required_start_and_end_dates():
     e = EnquiryExtraction(duration_days=5)
     missing = detect_missing_fields(e)
     assert FIELD_TRAVEL_DATE in missing
-    assert FIELD_DURATION not in missing  # duration is present
-    assert FIELD_WHEN not in missing  # when is satisfied
+    assert FIELD_TRAVEL_DATE_END in missing
+
+
+def test_duration_nights_do_not_replace_required_dates():
+    e = EnquiryExtraction(duration_nights=4)
+    assert FIELD_TRAVEL_DATE in detect_missing_fields(e)
 
 
 # ---------------------------------------------------------------------------
@@ -155,11 +131,11 @@ def test_requirements_fields_flagged_individually():
         ),
     )
     missing = detect_missing_fields(e)
-    assert FIELD_MEALS not in missing
+    assert FIELD_MEALS in missing
     assert FIELD_TRANSPORT in missing
-    assert FIELD_TOUR_GUIDE not in missing
-    assert FIELD_ACTIVITIES not in missing
-    assert FIELD_SPECIAL_INSTRUCTIONS not in missing
+    assert FIELD_TOUR_GUIDE in missing
+    assert FIELD_ACTIVITIES in missing
+    assert FIELD_SPECIAL_INSTRUCTIONS in missing
     assert FIELD_ACCOMMODATION not in missing
 
 
@@ -168,12 +144,12 @@ def test_empty_description_is_optional():
     assert FIELD_DESCRIPTION not in detect_missing_fields(e)
 
 
-def test_empty_special_requests_are_optional():
+def test_empty_special_requests_are_missing():
     e = EnquiryExtraction(requirements=EnquiryRequirements(special_requests=""))
-    assert FIELD_SPECIAL_INSTRUCTIONS not in detect_missing_fields(e)
+    assert FIELD_SPECIAL_INSTRUCTIONS in detect_missing_fields(e)
 
 
-def test_broad_date_window_satisfies_when_without_an_exact_date():
+def test_broad_date_window_does_not_replace_exact_dates():
     e = EnquiryExtraction(
         destination="Kerala",
         duration_days=6,
@@ -184,16 +160,15 @@ def test_broad_date_window_satisfies_when_without_an_exact_date():
         ),
     )
     missing = detect_missing_fields(e)
-    assert FIELD_WHEN not in missing
-    assert FIELD_TRAVEL_DATE not in missing
-    assert FIELD_DURATION not in missing
+    assert FIELD_TRAVEL_DATE in missing
+    assert FIELD_TRAVEL_DATE_END in missing
 
 
-def test_generic_flexibility_note_does_not_replace_a_travel_window():
+def test_generic_flexibility_note_does_not_replace_exact_dates():
     e = EnquiryExtraction(
         date_flexibility=DateFlexibility(is_flexible=True, note="Dates are flexible"),
     )
-    assert FIELD_WHEN in detect_missing_fields(e)
+    assert FIELD_TRAVEL_DATE in detect_missing_fields(e)
 
 
 # ---------------------------------------------------------------------------
@@ -202,11 +177,11 @@ def test_generic_flexibility_note_does_not_replace_a_travel_window():
 
 
 def test_clarifying_questions_for_missing_required():
-    missing = [FIELD_DESTINATION, FIELD_TRAVELERS]
+    missing = [FIELD_DESTINATION, FIELD_ACCOMMODATION]
     qs = generate_clarifying_questions(missing)
     assert len(qs) == 2
     assert qs[0].field == FIELD_DESTINATION
-    assert qs[1].field == FIELD_TRAVELERS
+    assert qs[1].field == FIELD_ACCOMMODATION
     assert qs[0].question
 
 
@@ -216,19 +191,19 @@ def test_clarifying_questions_capped_at_max():
     assert len(qs) <= MAX_CLARIFYING_QUESTIONS
 
 
-def test_clarifying_questions_skips_optional_and_unknown_fields():
+def test_clarifying_questions_skips_unknown_fields_but_asks_required_ones():
     qs = generate_clarifying_questions(["not_a_real_field", FIELD_TOUR_GUIDE, FIELD_ACTIVITIES])
-    assert qs == []
+    assert [question.field for question in qs] == [FIELD_TOUR_GUIDE, FIELD_ACTIVITIES]
 
 
-def test_clarifying_questions_defer_recommendations_until_core_is_complete():
+def test_clarifying_questions_include_every_missing_required_field():
     qs = generate_clarifying_questions([FIELD_DESTINATION, FIELD_BUDGET, FIELD_ACCOMMODATION])
-    assert [question.field for question in qs] == [FIELD_DESTINATION]
+    assert [question.field for question in qs] == [FIELD_DESTINATION, FIELD_ACCOMMODATION]
 
 
-def test_clarifying_questions_ask_recommendations_when_core_is_complete():
+def test_clarifying_questions_include_recommendations_after_required_fields():
     qs = generate_clarifying_questions([FIELD_BUDGET, FIELD_ACCOMMODATION])
-    assert [question.field for question in qs] == [FIELD_BUDGET, FIELD_ACCOMMODATION]
+    assert [question.field for question in qs] == [FIELD_ACCOMMODATION]
 
 
 def test_clarifying_questions_empty_input():

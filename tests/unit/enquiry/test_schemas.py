@@ -120,6 +120,7 @@ def test_extraction_all_defaults():
     assert e.travelers is None
     assert e.children == []
     assert e.budget is None
+    assert e.property_preferences == []
     assert e.flags == []
     assert e.tags == []
     assert isinstance(e.requirements, EnquiryRequirements)

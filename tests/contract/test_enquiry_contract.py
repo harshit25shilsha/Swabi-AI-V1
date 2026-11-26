@@ -131,6 +131,7 @@ def test_extraction_fields_locked():
         "requirements",
         "rooms",
         "property_type",
+        "property_preferences",
         "trip_type",
         "flags",
         "tags",
