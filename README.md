@@ -200,9 +200,10 @@ Authorization: Bearer <GUARDRAIL_API_TOKEN>
 Content-Type: application/json
 
 {
-  "message": "I want a 5-day family trip to Manali in December for 2 adults and two children aged 7 and 12, around 60k INR.",
+  "message": "We want to visit Rajasthan from 15 January to 21 January 2027. There are 3 adults. Our budget is approximately 90,000 INR total. We want to visit Jaipur, Jodhpur and Udaipur with private transportation.",
   "user_id": "u_123",           // optional, reserved for personalization
-  "currency_hint": "INR"        // optional, from customer profile
+  "currency_hint": "INR",       // optional, from customer profile
+  "previous_extraction": null     // optional, extraction returned by a prior turn
 }
 ```
 
@@ -213,41 +214,43 @@ Only `message` is required. Length: 1–4000 chars.
 ```json
 {
   "extraction": {
-    "title": "5-day family trip to Manali",
-    "description": "5-day family trip to Manali in December for a family of 4",
-    "destination": "Manali",
-    "travel_date": null,
-    "travel_date_end": null,
+    "title": "7-Day trip to Rajasthan",
+    "description": "Wants to visit Rajasthan, specifically Jaipur, Jodhpur and Udaipur, from 15/01/27 to 21/01/27, with 3 adults, total budget of 90,000 INR, and private transportation",
+    "destination": "Rajasthan",
+    "travel_date": "15/01/27",
+    "travel_date_end": "21/01/27",
     "date_flexibility": null,
-    "duration_days": 5,
-    "duration_nights": null,
-    "travelers": 4,
-    "adults": 2,
-    "children": [{"age": 7}, {"age": 12}],
-    "budget": {"amount": 60000.0, "currency": "INR", "is_per_person": false},
+    "duration_days": 7,
+    "duration_nights": 6,
+    "travelers": 3,
+    "adults": 3,
+    "children": [],
+    "budget": {"amount": 90000.0, "currency": "INR", "is_per_person": false},
     "budget_range_min": null,
     "budget_range_max": null,
     "requirements": {
-      "accommodation": "5-Star Hotel",
-      "meals": ["All Meals"],
-      "transport": null,
-      "activities": ["Skiing", "Local Sightseeing"],
+      "accommodation": null,
+      "meals": [],
+      "transport": "Private Transportation",
+      "activities": ["Sightseeing in Jaipur", "Sightseeing in Jodhpur", "Sightseeing in Udaipur"],
       "tour_guide": null,
-      "special_requests": "senior citizen friendly"
+      "special_requests": null
     },
     "rooms": null,
     "property_type": null,
-    "trip_type": "family",
+    "property_preferences": [],
+    "trip_type": null,
     "flags": [],
-    "tags": ["family"]
+    "tags": []
   },
-  "missing_fields": ["transport", "tour_guide", "travel_date"],
+  "missing_fields": ["accommodation", "meals", "tour_guide", "special_requests"],
   "clarifying_questions": [
-    {"field": "transport", "question": "What transport would you prefer?"},
-    {"field": "tour_guide", "question": "Would you like a tour guide?"},
-    {"field": "travel_date", "question": "What date would you like to start?"}
+    {"field": "accommodation", "question": "What type of accommodation would you prefer: budget hotel, 3-star, 4-star, luxury hotel, resort, or homestay?"},
+    {"field": "meals", "question": "What meal arrangement would you prefer: breakfast only, breakfast and dinner, all meals, or no meals?"},
+    {"field": "tour_guide", "question": "Would you like a professional tour guide, a local guide, or would you prefer to explore independently?"},
+    {"field": "special_requests", "question": "Do you have any special requirements or travel instructions, or should we proceed without any special requests?"}
   ],
-  "completeness": 0.8,
+  "completeness": 0.5556,
   "provider": "groq",
   "prompt_version": "enquiry_37956fc3",
   "request_id": "gr_..."
@@ -257,14 +260,34 @@ Only `message` is required. Length: 1–4000 chars.
 The public response contract is locked by
 `tests/contract/test_enquiry_contract.py`.
 
+### Required-answer detection and follow-ups
+
+Completeness is calculated only from these nine required answers:
+destination, travel start date, travel end date, accommodation, transport,
+meals, tour guide, activities, and special requests. It is
+`completed_required_fields / 9`, rounded to four decimal places. Budget,
+traveller count, duration, rooms, and flexibility do not affect this score.
+
+An explicit negative is preserved in the extraction, then receives one
+confirmation question before the field is complete: for example, `no meals`,
+`no guide`, or `no special requests` remains pending until confirmed. A named city in
+an explicitly stated itinerary becomes generic city sightseeing (for example,
+`Sightseeing in Jaipur`); the service never invents individual attractions.
+
+For a follow-up, send the preceding response's `extraction` object as
+`previous_extraction` along with the new message. Newly supplied values update
+the matching fields, while previously extracted values are retained. The cache
+key includes this context, so responses from distinct follow-up states cannot
+be mixed.
+
 ### Redis response cache
 
 Enquiry Understanding optionally caches successful, validated responses in
 Redis. Enable it with `ENABLE_ENQUIRY_RESPONSE_CACHE=true`.
 
-- A key hashes normalized message text, `currency_hint`, model, prompt
-  version, and response-schema version. Raw messages are never used as Redis
-  keys.
+- A key hashes normalized message text, `currency_hint`, `previous_extraction`,
+  model, prompt version, and response-schema version. Raw messages are never
+  used as Redis keys.
 - Cache entries expire after `ENQUIRY_RESPONSE_CACHE_TTL_SECONDS` (default:
   900 seconds). Each response receives the current HTTP request ID; request
   IDs are not stored in cached payloads.
@@ -355,42 +378,40 @@ Custom activities are returned as free strings (e.g. "Fly fishing").
 - **`transport`** (single string): `Private Cab (Sedan)`, `Private SUV`,
   `Tempo Traveller (12-Seater)`, `Luxury Sedan`, `Shared Coach`
 - **`meals`** (list): `Breakfast`, `Lunch`, `Dinner`, `All Meals`
-- **`tour_guide`** (single string): `English Speaking Guide`,
-  `Local Language Guide`, `Photography Guide`, `Adventure Guide`, `Optional`
+- **`tour_guide`** (single string): `Yes`, `No`, `English Speaking Guide`,
+  `Local Language Guide`, `Photography Guide`, `Adventure Guide`, `Optional`.
+  A guide type or language is emitted only when the traveller states it.
 - **`property_type`** (single string, BRD field): `villa`, `apartment`,
   `hotel`, `homestay`, `resort`, `guesthouse`, `other`
+- **`property_preferences`** (optional list): `Travel for Work`, `Travel with
+  Pets`, `Entire Apartment`, `Couple Friendly`. These are populated only from
+  explicit user wording and never affect missing fields or completeness.
 - **`trip_type`** (single string, BRD field): `myself`, `family`, `others`
 - **`flags`** (list, BRD field): `work`, `pets`, `couple_friendly`,
-  `entire_apartment`
+  `entire_apartment`, `activity_destination_review`,
+  `traveller_count_review`
 
 ### Missing-field detection
 
 Missing fields are calculated deterministically.
 
-**Required fields:**
-- `destination`
-- `when` — satisfied by an exact travel date, a date range,
-  a recognized broad date window, or a trip duration
-- `travelers`
+The nine required fields are `destination`, `travel_date`,
+`travel_date_end`, `accommodation`, `transport`, `meals`, `tour_guide`,
+`activities`, and `special_requests`. Every missing required field receives
+one clarifying question. Budget, travellers, duration, rooms, flexibility, and
+description remain optional extraction data.
 
-**Recommended fields:**
-- `budget`
-- `accommodation`
-- `transport`
-- `duration`
-- `travel_date`
+`completeness` measures required-field coverage, not extraction accuracy. It
+is `completed_required_fields / 9`; a value of `1.0` means all nine required
+answers are present.
 
-Meals, tour guide, activities, special instructions and description
-are optional. They are not requested unless relevant to the user's
-message or the current extraction flow.
+Traveller totals are reconciled only from explicit group, adult, and child
+counts. A total such as "4 people" does not imply four adults; unstated child
+ages remain null. When explicit totals conflict, the service preserves the
+stated composition and sets `traveller_count_review`.
 
-Clarifying questions prioritize missing required fields. Recommended
-questions are asked only after the required trip information is known.
-Questions are capped at `MAX_CLARIFYING_QUESTIONS = 4`.
-
-`completeness` measures required-field coverage, not extraction accuracy.
-A value of `1.0` means all three required fields are present. It does
-not mean every recommended preference has been extracted.
+Potentially incompatible activity/destination pairs are retained exactly as
+requested and marked with `activity_destination_review` for downstream review.
 
 ### Scope
 

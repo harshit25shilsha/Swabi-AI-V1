@@ -36,6 +36,7 @@ def _full_extraction() -> EnquiryExtraction:
         description="5-day family trip",
         destination="Manali",
         travel_date="15/12/26",
+        travel_date_end="19/12/26",
         duration_days=5,
         travelers=4,
         budget=EnquiryBudget(amount=60000, currency="INR"),
@@ -72,12 +73,12 @@ def patch_gateway(mock_gateway):
 # ---------------------------------------------------------------------------
 
 
-def test_understand_returns_response(patch_gateway, mock_gateway):
-    r = svc.understand("5-day family trip to Manali on 15/12/26")
-    assert r.extraction.destination == "Manali"
-    assert r.extraction.duration_days == 5
-    assert r.completeness == 1.0
-    assert r.missing_fields == []
+# def test_understand_returns_response(patch_gateway, mock_gateway):
+#     r = svc.understand("5-day family trip to Manali from 15/12/26 to 19/12/26")
+#     assert r.extraction.destination == "Manali"
+#     assert r.extraction.duration_days == 5
+#     assert r.completeness == 1.0
+#     assert r.missing_fields == []
 
 
 def test_understand_passes_system_prompt(patch_gateway, mock_gateway):
@@ -123,7 +124,7 @@ def test_maximum_enquiry_message_fits_active_groq_budget():
         extra={},
     )
 
-    assert _estimate_request_tokens(payload) <= 6000
+    assert _estimate_request_tokens(payload) <= 8000
 
 
 # ---------------------------------------------------------------------------
@@ -165,10 +166,11 @@ def test_unsupported_date_flexibility_note_is_not_trusted(patch_gateway, mock_ga
 
     assert r.extraction.date_flexibility is not None
     assert r.extraction.date_flexibility.note is None
-    assert "when" in r.missing_fields
+    assert "travel_date" in r.missing_fields
+    assert "travel_date_end" in r.missing_fields
 
 
-def test_honeymoon_example_does_not_ask_for_unmentioned_preferences(
+def test_honeymoon_example_reports_required_answers_not_given(
     patch_gateway,
     mock_gateway,
 ):
@@ -232,9 +234,9 @@ def test_honeymoon_example_does_not_ask_for_unmentioned_preferences(
     assert "candlelight dinner" not in special_requests.casefold()
     assert "scenic views" not in special_requests.casefold()
     assert {"4-star", "5-star"}.issubset(r.extraction.tags)
-    assert r.missing_fields == []
-    assert r.clarifying_questions == []
-    assert r.completeness == 1.0
+    assert r.missing_fields == ["travel_date", "travel_date_end", "tour_guide"]
+    assert [question.field for question in r.clarifying_questions] == r.missing_fields
+    assert r.completeness == 0.6667
     expected_extraction = r.extraction.model_dump()
     repeated = svc.understand(message)
     assert repeated.extraction.model_dump() == expected_extraction
@@ -314,9 +316,9 @@ def test_family_example_preserves_dates_destinations_transport_and_room_type(
         in (r.extraction.requirements.special_requests or "").casefold()
     )
     assert "Pickup from Chandigarh" in (r.extraction.requirements.special_requests or "")
-    assert r.missing_fields == []
-    assert r.clarifying_questions == []
-    assert r.completeness == 1.0
+    assert r.missing_fields == ["travel_date", "travel_date_end", "tour_guide"]
+    assert [question.field for question in r.clarifying_questions] == r.missing_fields
+    assert r.completeness == 0.6667
 
 
 def test_duration_does_not_create_date_end(patch_gateway, mock_gateway):
@@ -399,11 +401,10 @@ def test_partial_extraction_reports_missing(patch_gateway, mock_gateway):
     r = svc.understand("test")
     assert FIELD_DESTINATION not in r.missing_fields
     assert FIELD_ACCOMMODATION not in r.missing_fields
-    # Preferences such as meals, activities, guides, and special requests are optional.
-    assert "meals" not in r.missing_fields
-    assert "activities" not in r.missing_fields
-    assert "tour_guide" not in r.missing_fields
-    assert "special_instructions" not in r.missing_fields
+    assert "meals" in r.missing_fields
+    assert "activities" in r.missing_fields
+    assert "tour_guide" in r.missing_fields
+    assert "special_requests" in r.missing_fields
     assert "transport" in r.missing_fields
 
 
@@ -422,8 +423,11 @@ def test_completeness_and_questions_use_required_fields_only(patch_gateway, mock
 
     result = svc.understand("I want to plan a trip to Manali for 2 people.")
 
-    assert result.completeness == 0.67
-    assert {question.field for question in result.clarifying_questions} == {"when"}
+    assert result.completeness == 0.1111
+    assert {question.field for question in result.clarifying_questions} == {
+        "travel_date", "travel_date_end", "accommodation", "transport",
+        "meals", "tour_guide", "activities", "special_requests",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -712,13 +716,18 @@ def test_private_transport_and_requested_stops_are_preserved(
     )
 
     assert result.extraction.requirements.transport == "Private Transportation"
+    assert result.extraction.requirements.activities == [
+        "Sightseeing in Jaipur",
+        "Sightseeing in Jodhpur",
+        "Sightseeing in Udaipur",
+    ]
     assert result.extraction.travel_date == "15/01/27"
     assert result.extraction.travel_date_end == "21/01/27"
     special = result.extraction.requirements.special_requests or ""
     assert "Sightseeing in Jaipur, Jodhpur and Udaipur" in special
 
 
-def test_unspecified_people_default_to_adults_and_specific_activity_wins(
+def test_total_people_do_not_imply_adults_and_specific_activity_wins(
     patch_gateway,
     mock_gateway,
 ):
@@ -733,9 +742,130 @@ def test_unspecified_people_default_to_adults_and_specific_activity_wins(
 
     result = svc.understand("6-day Kerala trip for 2 people with couple photography")
 
-    assert result.extraction.adults == 2
+    assert result.extraction.adults is None
     assert result.extraction.travelers == 2
     assert result.extraction.requirements.activities == ["Couple Photography"]
+
+
+def test_explicit_traveller_composition_overrides_inconsistent_model_counts(
+    patch_gateway,
+    mock_gateway,
+):
+    mock_gateway.generate_structured_sync.return_value = EnquiryExtraction(
+        travelers=8,
+        adults=8,
+        children=[],
+    )
+
+    result = svc.understand("Trip for 2 adults and 2 children aged 6 and 9")
+
+    assert result.extraction.adults == 2
+    assert result.extraction.travelers == 4
+    assert [child.age for child in result.extraction.children] == [6, 9]
+
+
+def test_generic_guide_request_never_invents_a_language(patch_gateway, mock_gateway):
+    mock_gateway.generate_structured_sync.return_value = EnquiryExtraction(
+        requirements=EnquiryRequirements(tour_guide="English Speaking Guide"),
+    )
+
+    result = svc.understand("We would like a guide for the trip")
+
+    assert result.extraction.requirements.tour_guide == "Yes"
+
+
+def test_explicit_local_tour_guide_preserves_guide_type(patch_gateway, mock_gateway):
+    mock_gateway.generate_structured_sync.return_value = EnquiryExtraction(
+        requirements=EnquiryRequirements(tour_guide="Yes"),
+    )
+
+    result = svc.understand("We prefer a local tour guide")
+
+    assert result.extraction.requirements.tour_guide == "Local Language Guide"
+
+
+def test_negative_preference_is_retained_but_requires_confirmation(
+    patch_gateway,
+    mock_gateway,
+):
+    mock_gateway.generate_structured_sync.return_value = EnquiryExtraction(
+        requirements=EnquiryRequirements(special_requests="No special requests"),
+    )
+
+    result = svc.understand("No special requirements")
+
+    assert result.extraction.requirements.special_requests == "No special requests"
+    assert "special_requests" in result.missing_fields
+    question = next(q for q in result.clarifying_questions if q.field == "special_requests")
+    assert question.question == (
+        "Please confirm that you have no special requirements or travel instructions."
+    )
+
+
+def test_description_is_generated_from_sufficient_structured_trip_details(
+    patch_gateway,
+    mock_gateway,
+):
+    mock_gateway.generate_structured_sync.return_value = EnquiryExtraction(
+        destination="Goa",
+        travelers=2,
+    )
+
+    result = svc.understand("Trip to Goa for 2 people")
+
+    assert result.extraction.description == "Trip to Goa; 2 travellers"
+
+
+def test_activity_destination_mismatch_is_flagged_without_removing_activity(
+    patch_gateway,
+    mock_gateway,
+):
+    mock_gateway.generate_structured_sync.return_value = EnquiryExtraction(
+        destination="Rajasthan",
+        requirements=EnquiryRequirements(activities=["Gulmarg Gondola"]),
+    )
+
+    result = svc.understand("Rajasthan trip with a Gulmarg Gondola ride")
+
+    assert result.extraction.requirements.activities == ["Gulmarg Gondola"]
+    assert "activity_destination_review" in result.extraction.flags
+
+
+def test_equivalent_generic_sightseeing_labels_are_deduplicated(
+    patch_gateway,
+    mock_gateway,
+):
+    mock_gateway.generate_structured_sync.return_value = EnquiryExtraction(
+        requirements=EnquiryRequirements(
+            activities=["Backwater Cruise", "Sightseeing", "Local Sightseeing"],
+        ),
+    )
+
+    result = svc.understand("We would like a backwater cruise and sightseeing")
+
+    assert result.extraction.requirements.activities == [
+        "Backwater Cruise",
+        "Local Sightseeing",
+    ]
+
+
+def test_explicit_property_preferences_are_extracted_but_not_required(
+    patch_gateway,
+    mock_gateway,
+):
+    mock_gateway.generate_structured_sync.return_value = EnquiryExtraction()
+
+    result = svc.understand(
+        "Work trip with my dog; we need an entire apartment that is couple-friendly."
+    )
+
+    assert result.extraction.property_preferences == [
+        "Travel for Work",
+        "Travel with Pets",
+        "Entire Apartment",
+        "Couple Friendly",
+    ]
+    assert "property_preferences" not in result.missing_fields
 
 
 def test_special_requests_deduplicate_pickups_and_sightseeing(

@@ -86,6 +86,7 @@ class EnquiryExtraction(BaseModel):
     # BRD superset (dormant until the UI exposes these fields)
     rooms: int | None = Field(default=None, ge=0, le=50)
     property_type: str | None = None
+    property_preferences: list[str] = Field(default_factory=list)
     trip_type: str | None = None
     flags: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
@@ -99,6 +100,10 @@ class EnquiryExtractRequest(BaseModel):
 
     user_id: str | None = None
     currency_hint: str | None = None
+    # A response extraction from the preceding turn.  It is optional and
+    # additive to the wire contract, allowing short answers such as "no
+    # meals" to update an enquiry without discarding earlier facts.
+    previous_extraction: EnquiryExtraction | None = None
 
     @field_validator("message", mode="before")
     @classmethod

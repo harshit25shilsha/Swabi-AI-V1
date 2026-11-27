@@ -6,6 +6,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.capabilities.support.greeting import (
+    GREETING_PROMPT_VERSION,
+    GreetingAnswer,
+    GreetingClassification,
+)
+from app.capabilities.support.intent_resolver import ResolvedIntent
 from app.capabilities.support.live_data_classifier import LiveDataIntent
 from app.capabilities.support.schemas import (
     AnswerType,
@@ -104,6 +110,106 @@ def test_live_data_returns_needs_live_data(retriever, patch_version_ok):
     )
     assert r.answer_type == AnswerType.NEEDS_LIVE_DATA
     retriever.search.assert_not_called()
+
+
+def test_greeting_only_bypasses_intent_resolution_and_rag(monkeypatch, retriever):
+    from app.capabilities.support import service
+
+    classifier = MagicMock()
+    classifier.classify.return_value = GreetingClassification(
+        greeting_only=True,
+        confidence=0.97,
+    )
+    gateway = MagicMock()
+    gateway.generate_structured_sync.return_value = GreetingAnswer(answer="Good morning!")
+    monkeypatch.setattr(service, "_get_greeting_classifier", lambda: classifier)
+    monkeypatch.setattr(service, "_get_gateway", lambda: gateway)
+    resolver = MagicMock()
+    monkeypatch.setattr(service, "_get_resolver", lambda: resolver)
+
+    response = ask(
+        SupportAskRequest(question="Hi, Good Morning", audience=Audience.CUSTOMER),
+        retriever=retriever,
+    )
+
+    assert response.answer == "Good morning!"
+    assert response.answer_type == AnswerType.ANSWERED
+    assert response.citations == []
+    assert response.retrieval_mode_used == "not_applicable"
+    assert response.knowledge_version == ""
+    assert response.provider == service.settings.llm_provider
+    assert response.prompt_version == GREETING_PROMPT_VERSION
+    assert response.live_data_used is False
+    assert response.live_data_sources == []
+    classifier.classify.assert_called_once_with("Hi, Good Morning")
+    resolver.resolve.assert_not_called()
+    retriever.search.assert_not_called()
+    gateway.generate_structured_sync.assert_called_once()
+
+
+def test_greeting_with_support_question_uses_existing_rag(
+    monkeypatch, retriever, patch_version_ok, patch_gateway
+):
+    from app.capabilities.support import service
+
+    classifier = MagicMock()
+    classifier.classify.return_value = GreetingClassification(
+        greeting_only=False,
+        confidence=0.98,
+    )
+    monkeypatch.setattr(service, "_get_greeting_classifier", lambda: classifier)
+    resolver = MagicMock()
+    resolver.resolve.return_value = ResolvedIntent(
+        intent=LiveDataIntent.NONE,
+        source="llm",
+        reason="llm_none",
+        use_rag=True,
+        knowledge_query="cancellation policy",
+    )
+    monkeypatch.setattr(service, "_get_resolver", lambda: resolver)
+
+    response = ask(
+        SupportAskRequest(
+            question="Hi, how does the cancellation policy work?",
+            audience=Audience.CUSTOMER,
+        ),
+        retriever=retriever,
+    )
+
+    assert response.answer_type == AnswerType.ANSWERED
+    retriever.search.assert_called_once()
+    assert patch_gateway.generate_structured_sync.call_args.kwargs["system"].startswith(
+        "You answer Swabi customer-support questions"
+    )
+
+
+def test_prepared_greeting_skips_resolver_and_retriever(monkeypatch):
+    from app.capabilities.support import service
+
+    classifier = MagicMock()
+    classifier.classify.return_value = GreetingClassification(
+        greeting_only=True,
+        confidence=0.95,
+    )
+    gateway = MagicMock()
+    gateway.generate_structured_sync.return_value = GreetingAnswer(answer="Hello!")
+    monkeypatch.setattr(service, "_get_greeting_classifier", lambda: classifier)
+    monkeypatch.setattr(service, "_get_gateway", lambda: gateway)
+    resolver = MagicMock()
+    monkeypatch.setattr(service, "_get_resolver", lambda: resolver)
+    retriever = MagicMock()
+    monkeypatch.setattr(service, "_get_retriever", lambda: retriever)
+
+    plan = service.prepare_support_ask(
+        SupportAskRequest(question="Hello there!", audience=Audience.CUSTOMER)
+    )
+
+    assert plan.greeting_checked is True
+    assert plan.greeting_response is not None
+    assert plan.cache_eligible is False
+    resolver.resolve.assert_not_called()
+    retriever.search.assert_not_called()
+    retriever.store.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

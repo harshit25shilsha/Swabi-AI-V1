@@ -23,13 +23,19 @@ from app.capabilities.enquiry.constants import (
     FIELD_BUDGET,
     FIELD_DESTINATION,
     FIELD_DURATION,
+    FIELD_ACTIVITIES,
+    FIELD_MEALS,
+    FIELD_SPECIAL_INSTRUCTIONS,
+    FIELD_TOUR_GUIDE,
     FIELD_TRANSPORT,
     FIELD_TRAVEL_DATE,
+    FIELD_TRAVEL_DATE_END,
     FIELD_TRAVELERS,
     FIELD_WHEN,
     MAX_CLARIFYING_QUESTIONS,
-    RECOMMENDED_FIELDS,
     REQUIRED_FIELDS,
+    UNCONFIRMED_NEGATIVE_VALUES,
+    EnquiryFlag,
     PropertyType,
     Transport,
     TripType,
@@ -40,6 +46,7 @@ from app.capabilities.enquiry.prompts import (
 )
 from app.capabilities.enquiry.schemas import (
     ClarificationQuestion,
+    Child,
     DateFlexibility,
     EnquiryBudget,
     EnquiryExtraction,
@@ -132,11 +139,24 @@ _QUESTION_TEMPLATES: dict[str, str] = {
     FIELD_DESTINATION: "Where would you like to go?",
     FIELD_WHEN: "When are you planning to travel, and for how long?",
     FIELD_DURATION: "How many nights and days?",
-    FIELD_TRAVEL_DATE: "What date would you like to start?",
+    FIELD_TRAVEL_DATE: "What date would you like to start your trip?",
+    FIELD_TRAVEL_DATE_END: "What date would you like to end your trip?",
     FIELD_TRAVELERS: "How many travellers?",
     FIELD_BUDGET: "Do you have a budget range in mind?",
-    FIELD_ACCOMMODATION: "Any accommodation preference, such as a hotel, resort, or houseboat?",
+    FIELD_ACCOMMODATION: "What type of accommodation would you prefer: budget hotel, 3-star, 4-star, luxury hotel, resort, or homestay?",
     FIELD_TRANSPORT: "What transport would you prefer?",
+    FIELD_MEALS: "What meal arrangement would you prefer: breakfast only, breakfast and dinner, all meals, or no meals?",
+    FIELD_TOUR_GUIDE: "Would you like a professional tour guide, a local guide, or would you prefer to explore independently?",
+    FIELD_ACTIVITIES: "What sightseeing or activities would you like to include?",
+    FIELD_SPECIAL_INSTRUCTIONS: "Do you have any special requirements or travel instructions, or should we proceed without any special requests?",
+}
+
+_NEGATIVE_CONFIRMATION_TEMPLATES: dict[str, str] = {
+    FIELD_ACCOMMODATION: "Please confirm that you do not require accommodation for this trip.",
+    FIELD_TRANSPORT: "Please confirm that you do not require transportation for this trip.",
+    FIELD_MEALS: "Please confirm that you do not require any meal arrangement.",
+    FIELD_TOUR_GUIDE: "Please confirm that you would prefer to travel without a tour guide.",
+    FIELD_SPECIAL_INSTRUCTIONS: "Please confirm that you have no special requirements or travel instructions.",
 }
 
 
@@ -419,8 +439,26 @@ def _preserve_extraction_details(extraction: EnquiryExtraction) -> None:
     extracts free-text details for every supported input language; replaying a
     substring from the original request can reintroduce its source language.
     """
-    summary = extraction.description or f"Trip to {extraction.destination or 'the destination'}"
+    summary = extraction.description
     details: list[str] = []
+
+    if summary is None and extraction.destination:
+        summary = f"Trip to {extraction.destination}"
+    elif summary is None and extraction.duration_days:
+        summary = f"{extraction.duration_days}-day trip"
+    elif summary is None and extraction.travelers is not None:
+        summary = f"Trip for {extraction.travelers} travellers"
+
+    if summary is None:
+        return
+
+    if extraction.travel_date and extraction.travel_date_end:
+        details.append(f"from {extraction.travel_date} to {extraction.travel_date_end}")
+    elif extraction.duration_days:
+        details.append(f"{extraction.duration_days}-day trip")
+
+    if extraction.travelers is not None:
+        details.append(f"{extraction.travelers} travellers")
 
     if extraction.adults is not None and extraction.children:
         ages = [str(child.age) for child in extraction.children if child.age is not None]
@@ -431,7 +469,10 @@ def _preserve_extraction_details(extraction: EnquiryExtraction) -> None:
             details.append(composition)
 
     if details:
-        extraction.description = f"{summary.rstrip(' .;')}; {'; '.join(details)}"
+        for detail in details:
+            if detail.casefold() not in summary.casefold():
+                summary = f"{summary.rstrip(' .;')}; {detail}"
+    extraction.description = summary
 
 
 def _apply_semantic_preservation(message: str, extraction: EnquiryExtraction) -> None:
@@ -443,6 +484,10 @@ def _apply_semantic_preservation(message: str, extraction: EnquiryExtraction) ->
     has_houseboat = re.search(r"\bhouse\s*boats?\b", message, re.IGNORECASE) is not None
 
     _preserve_extraction_details(extraction)
+    _apply_explicit_negative_preferences(message, extraction)
+    _validate_tour_guide_evidence(message, extraction)
+    _extract_property_preferences(message, extraction)
+    _infer_city_sightseeing(message, extraction)
 
     if re.search(r"\bhoneymoon\b", normalized):
         extraction.trip_type = TripType.HONEYMOON.value
@@ -579,9 +624,10 @@ def _apply_semantic_preservation(message: str, extraction: EnquiryExtraction) ->
         ]
 
     unique_activities: list[str] = []
-    for activity in req.activities:
+    for activity in _canonicalize_activities(req.activities):
         _append_unique(unique_activities, activity)
     req.activities = unique_activities
+    _flag_activity_destination_review(extraction)
 
     room_match = _ROOM_COUNT_PATTERN.search(message)
     if room_match:
@@ -663,6 +709,124 @@ def _apply_semantic_preservation(message: str, extraction: EnquiryExtraction) ->
             special_requests = f"{special_requests}; {match.group().strip()}".strip("; ")
 
     req.special_requests = _normalize_special_requests(special_requests)
+
+
+def _canonicalize_activities(activities: list[str]) -> list[str]:
+    """Collapse equivalent generic activity labels without losing specificity."""
+    canonical: list[str] = []
+    for activity in activities:
+        normalized = activity.strip()
+        if normalized.casefold() in {"sightseeing", "local sightseeing", "city sightseeing"}:
+            normalized = "Local Sightseeing"
+        canonical.append(normalized)
+    return canonical
+
+
+def _validate_tour_guide_evidence(message: str, extraction: EnquiryExtraction) -> None:
+    """Keep guide preferences only when the message supports their detail."""
+    req = extraction.requirements
+    if not req.tour_guide:
+        return
+
+    normalized = message.casefold()
+    if not re.search(r"\b(?:tour\s+)?guide\b|\bexplore\s+independently\b", normalized):
+        req.tour_guide = None
+        return
+    if re.search(r"\b(?:no|without|don't need|do not need)\s+(?:a\s+)?(?:tour\s+)?guide\b", normalized):
+        req.tour_guide = "No"
+    elif re.search(r"\benglish(?:[- ]speaking)?\s+guide\b", normalized):
+        req.tour_guide = "English Speaking Guide"
+    elif re.search(r"\blocal(?:[- ]language)?\s+(?:tour\s+)?guide\b", normalized):
+        req.tour_guide = "Local Language Guide"
+    elif re.search(r"\b(?:photography|adventure)\s+guide\b", normalized):
+        # The model may preserve this supported, explicitly qualified value.
+        pass
+    else:
+        # A requested guide is affirmative, but its language/type is unknown.
+        req.tour_guide = "Yes"
+
+
+def _extract_property_preferences(message: str, extraction: EnquiryExtraction) -> None:
+    """Add only explicitly stated optional property preferences."""
+    patterns = (
+        (r"\b(?:travel(?:ling)?|trip|stay)\s+(?:for\s+)?work\b|\bwork\s+trip\b", "Travel for Work"),
+        (r"\b(?:travel(?:ling)?|trip|stay)\s+with\s+(?:(?:my|a)\s+)?pets?\b|\bwith\s+(?:my\s+)?(?:dog|cat|pet)\b|\b(?:pet[- ]?friendly|bring(?:ing)?\s+(?:a\s+)?(?:dog|cat|pet))\b", "Travel with Pets"),
+        (r"\b(?:an?\s+)?entire\s+(?:apartment|flat|home)\b", "Entire Apartment"),
+        (r"\bcouple[- ]?friendly\b", "Couple Friendly"),
+    )
+    for pattern, preference in patterns:
+        if re.search(pattern, message, re.IGNORECASE):
+            _append_unique(extraction.property_preferences, preference)
+
+
+def _flag_activity_destination_review(extraction: EnquiryExtraction) -> None:
+    """Flag only clear geographic mismatches; never discard stated activities."""
+    destination = (extraction.destination or "").casefold()
+    if not destination or not extraction.requirements.activities:
+        return
+
+    activity_regions = {
+        "Shikara Ride": ("kashmir", "srinagar"),
+        "Gulmarg Gondola": ("kashmir", "gulmarg"),
+        "Camel Safari": ("rajasthan", "jaisalmer", "bikaner"),
+        "Scuba Diving": ("goa", "andaman", "lakshadweep", "kerala"),
+        "Backwater Cruise": ("kerala", "alleppey", "alappuzha", "kumarakom"),
+    }
+    for activity in extraction.requirements.activities:
+        regions = activity_regions.get(activity)
+        if regions and not any(region in destination for region in regions):
+            _append_unique(extraction.flags, EnquiryFlag.ACTIVITY_DESTINATION_REVIEW.value)
+            return
+
+
+def _apply_explicit_negative_preferences(message: str, extraction: EnquiryExtraction) -> None:
+    """Represent an explicit refusal as a completed preference, never null.
+
+    Null/empty means unknown in this API. These canonical values make that
+    distinction survive both LLM variation and subsequent conversation merges.
+    """
+    normalized = message.casefold()
+    req = extraction.requirements
+    if re.search(r"\b(?:no|without|don't need|do not need)\s+(?:any\s+)?(?:hotel|accommodation|stay)\b", normalized):
+        req.accommodation = "No accommodation required"
+    if re.search(r"\b(?:no|without|don't need|do not need)\s+(?:any\s+)?(?:transport|transportation|cab|transfer)s?\b", normalized):
+        req.transport = "No transport required"
+    if re.search(r"\b(?:no|without|don't need|do not need)\s+(?:any\s+)?meals?\b", normalized):
+        req.meals = ["No Meals Required"]
+    if re.search(r"\b(?:no|without|don't need|do not need)\s+(?:a\s+)?(?:tour\s+)?guide\b", normalized):
+        req.tour_guide = "No"
+    if re.search(
+        r"\b(?:no|none|without)\s+(?:special\s+)?(?:requests?|requirements?|instructions?)\b"
+        r"|\bno\s+special\s+(?:requirements?|instructions?)\b",
+        normalized,
+    ):
+        req.special_requests = "No special requests"
+
+
+def _infer_city_sightseeing(message: str, extraction: EnquiryExtraction) -> None:
+    """Turn explicitly named itinerary stops into generic sightseeing only.
+
+    This intentionally does not look up attractions: a named stop supports
+    sightseeing in that city, but not a claim that the traveller wants any
+    particular monument or experience.
+    """
+    pattern = re.compile(
+        r"\b(?:visit|visiting|explore|exploring|cover|covering)\s+"
+        r"(?P<stops>[A-Z][A-Za-z .'-]*(?:\s*,\s*[A-Z][A-Za-z .'-]*)*(?:\s*(?:,?\s+and|\s+& )\s*[A-Z][A-Za-z .'-]*)?)",
+        re.IGNORECASE,
+    )
+    for match in pattern.finditer(message):
+        stops = re.split(r"\s*,\s*|\s+(?:and|&)\s+", match.group("stops"))
+        for stop in stops:
+            # "visit Rajasthan from 15 January" names the overall trip before
+            # its dates, not a discrete sightseeing stop.
+            if re.search(r"\s+from\b", stop, re.IGNORECASE):
+                continue
+            # Stop before common sentence continuations such as "with private".
+            stop = re.split(r"\s+\b(?:with|for|from|on|in)\b\s+", stop, maxsplit=1)[0]
+            stop = stop.strip(" ,.;")
+            if stop and re.fullmatch(r"[A-Z][A-Za-z .'-]*", stop):
+                _append_unique(extraction.requirements.activities, f"Sightseeing in {stop}")
 
 
 _MONEY_TOKEN = (
@@ -791,19 +955,63 @@ def _apply_budget_fallback(
             extraction.budget.is_per_person = is_per_person
 
 
-def _apply_traveler_consistency(extraction: EnquiryExtraction) -> None:
-    """Keep traveller totals consistent, defaulting unspecified people to adults."""
-    if extraction.adults is None and extraction.travelers is not None and not extraction.children:
-        extraction.adults = extraction.travelers
-    elif extraction.adults is not None:
-        extraction.travelers = extraction.adults + len(extraction.children)
+def _apply_traveler_consistency(message: str, extraction: EnquiryExtraction) -> None:
+    """Reconcile traveller fields using only explicit composition evidence.
+
+    A total party size is not evidence that everyone is an adult. Child ages
+    are retained when stated and otherwise represented as age-null children.
+    """
+    number_pattern = r"\d+|one|two|three|four|five|six|seven|eight|nine|ten"
+
+    def number(value: str) -> int:
+        return int(value) if value.isdigit() else _NUMBER_WORDS[value.casefold()]
+
+    adult_match = re.search(rf"\b(?P<count>{number_pattern})\s+adults?\b", message, re.IGNORECASE)
+    child_match = re.search(rf"\b(?P<count>{number_pattern})\s+children?\b", message, re.IGNORECASE)
+    total_match = re.search(
+        rf"\b(?:family|group|party)\s+of\s+(?P<count>{number_pattern})\b"
+        rf"|\b(?P<plain>{number_pattern})\s+(?:people|travellers?|travelers?|guests?|persons?)\b",
+        message,
+        re.IGNORECASE,
+    )
+
+    if adult_match:
+        extraction.adults = number(adult_match.group("count"))
+
+    explicit_child_count = number(child_match.group("count")) if child_match else None
+    ages_match = re.search(
+        r"\bchildren?\s+(?:aged?|ages?)\s+(?P<ages>\d{1,2}(?:\s*(?:,|and)\s*\d{1,2})*)",
+        message,
+        re.IGNORECASE,
+    )
+    ages = [int(age) for age in re.findall(r"\d{1,2}", ages_match.group("ages"))] if ages_match else []
+    if explicit_child_count is not None or ages:
+        child_count = explicit_child_count if explicit_child_count is not None else len(ages)
+        extraction.children = [Child(age=age) for age in ages[:child_count]]
+        extraction.children.extend(Child(age=None) for _ in range(child_count - len(ages)))
+
+    explicit_total = None
+    if total_match:
+        explicit_total = number(total_match.group("count") or total_match.group("plain"))
+
+    composition_total = None
+    if extraction.adults is not None and (explicit_child_count is not None or ages):
+        composition_total = extraction.adults + len(extraction.children)
+
+    if composition_total is not None:
+        extraction.travelers = composition_total
+        if explicit_total is not None and explicit_total != composition_total:
+            _append_unique(extraction.flags, EnquiryFlag.TRAVELLER_COUNT_REVIEW.value)
+    elif explicit_total is not None:
+        extraction.travelers = explicit_total
 
 
 def detect_missing_fields(extraction: EnquiryExtraction) -> list[str]:
-    """Return field names that are absent or unusable.
+    """Return every genuinely unanswered required field, then recommendations.
 
-    Return missing required fields first, followed by recommended planning
-    details. Optional preferences are not treated as missing.
+    Explicit negative preferences are retained but remain pending until the
+    traveller confirms the refusal. This keeps a one-question confirmation
+    loop without discarding what the traveller already said.
     """
     missing: list[str] = []
     req = extraction.requirements
@@ -811,59 +1019,62 @@ def detect_missing_fields(extraction: EnquiryExtraction) -> list[str]:
     if not extraction.destination:
         missing.append(FIELD_DESTINATION)
 
-    if (
-        extraction.travel_date is None
-        and extraction.travel_date_end is None
-        and extraction.duration_days is None
-        and extraction.duration_nights is None
-        and not _has_date_window(extraction)
-    ):
-        missing.append(FIELD_WHEN)
+    if not extraction.travel_date:
+        missing.append(FIELD_TRAVEL_DATE)
 
-    if extraction.travelers is None:
-        missing.append(FIELD_TRAVELERS)
+    if not extraction.travel_date_end:
+        missing.append(FIELD_TRAVEL_DATE_END)
 
-    has_budget = (extraction.budget is not None and extraction.budget.amount is not None) or (
-        extraction.budget_range_min is not None and extraction.budget_range_max is not None
-    )
-
-    if not has_budget:
-        missing.append(FIELD_BUDGET)
-
-    if not req.accommodation:
+    if _field_needs_confirmation(FIELD_ACCOMMODATION, req.accommodation):
         missing.append(FIELD_ACCOMMODATION)
 
-    if not req.transport:
+    if _field_needs_confirmation(FIELD_TRANSPORT, req.transport):
         missing.append(FIELD_TRANSPORT)
 
-    if extraction.duration_nights is None and extraction.duration_days is None:
-        missing.append(FIELD_DURATION)
+    if _field_needs_confirmation(FIELD_MEALS, req.meals):
+        missing.append(FIELD_MEALS)
 
-    has_date_window = _has_date_window(extraction)
-    if (
-        extraction.travel_date is None
-        and extraction.travel_date_end is None
-        and not has_date_window
-        and (extraction.duration_days is not None or extraction.duration_nights is not None)
-    ):
-        missing.append(FIELD_TRAVEL_DATE)
+    if _field_needs_confirmation(FIELD_TOUR_GUIDE, req.tour_guide):
+        missing.append(FIELD_TOUR_GUIDE)
+
+    if not req.activities:
+        missing.append(FIELD_ACTIVITIES)
+
+    if _field_needs_confirmation(FIELD_SPECIAL_INSTRUCTIONS, req.special_requests):
+        missing.append(FIELD_SPECIAL_INSTRUCTIONS)
 
     return missing
 
 
+def _field_needs_confirmation(field: str, value: object) -> bool:
+    """Return true for absent values and explicit refusals awaiting confirmation."""
+    if value is None or value == "" or value == []:
+        return True
+    values = UNCONFIRMED_NEGATIVE_VALUES.get(field, ())
+    if isinstance(value, str):
+        return value.casefold() in values
+    if isinstance(value, list):
+        return any(isinstance(item, str) and item.casefold() in values for item in value)
+    return False
+
+
 def generate_clarifying_questions(
     missing: list[str],
+    extraction: EnquiryExtraction | None = None,
 ) -> list[ClarificationQuestion]:
-    """Ask core questions first, then recommended questions, capped at MAX."""
+    """Generate exactly one question for every missing required field."""
     missing_set = set(missing)
     required_missing = [field for field in REQUIRED_FIELDS if field in missing_set]
-    fields_to_ask = required_missing or [
-        field for field in RECOMMENDED_FIELDS if field in missing_set
-    ]
+    fields_to_ask = required_missing
 
     questions: list[ClarificationQuestion] = []
     for field in fields_to_ask:
-        template = _QUESTION_TEMPLATES.get(field)
+        value = _required_field_value(extraction, field) if extraction else None
+        template = (
+            _NEGATIVE_CONFIRMATION_TEMPLATES.get(field)
+            if extraction is not None and not _field_is_absent(value)
+            else _QUESTION_TEMPLATES.get(field)
+        )
         if template is None:
             continue
         questions.append(ClarificationQuestion(field=field, question=template))
@@ -872,10 +1083,28 @@ def generate_clarifying_questions(
     return questions
 
 
+def _field_is_absent(value: object) -> bool:
+    return value is None or value == "" or value == []
+
+
+def _required_field_value(extraction: EnquiryExtraction | None, field: str) -> object:
+    if extraction is None:
+        return None
+    requirements = extraction.requirements
+    values: dict[str, object] = {
+        FIELD_ACCOMMODATION: requirements.accommodation,
+        FIELD_TRANSPORT: requirements.transport,
+        FIELD_MEALS: requirements.meals,
+        FIELD_TOUR_GUIDE: requirements.tour_guide,
+        FIELD_SPECIAL_INSTRUCTIONS: requirements.special_requests,
+    }
+    return values.get(field)
+
+
 def _completeness(missing: list[str]) -> float:
-    """Fraction of required fields present. 0.0 - 1.0."""
+    """Fraction of the nine required fields that are complete."""
     required_missing = sum(1 for f in missing if f in REQUIRED_FIELDS)
-    return round(1.0 - (required_missing / len(REQUIRED_FIELDS)), 2)
+    return round(1.0 - (required_missing / len(REQUIRED_FIELDS)), 4)
 
 
 # LLM interaction
@@ -898,6 +1127,47 @@ def _apply_currency_hint(extraction: EnquiryExtraction, currency_hint: str | Non
         extraction.budget.currency = currency_hint.strip().upper()
 
 
+def _merge_with_previous(
+    previous: EnquiryExtraction,
+    update: EnquiryExtraction,
+) -> EnquiryExtraction:
+    """Overlay a follow-up extraction onto the prior enquiry without loss.
+
+    Scalars from a follow-up win only when they contain an answer; list fields
+    are combined case-insensitively so a traveller can add preferences over
+    several turns.  This is deterministic and deliberately independent of
+    wording returned by the LLM.
+    """
+    merged = previous.model_copy(deep=True)
+    for field in (
+        "title", "description", "destination", "travel_date", "travel_date_end",
+        "date_flexibility", "duration_days", "duration_nights", "travelers", "adults",
+        "budget", "budget_range_min", "budget_range_max", "rooms", "property_type",
+        "trip_type",
+    ):
+        value = getattr(update, field)
+        if value is not None:
+            setattr(merged, field, value)
+
+    for field in ("children", "property_preferences", "flags", "tags"):
+        existing = getattr(merged, field)
+        for item in getattr(update, field):
+            if item not in existing:
+                existing.append(item)
+
+    for field in (
+        "accommodation", "transport", "tour_guide", "special_requests",
+    ):
+        value = getattr(update.requirements, field)
+        if value:
+            setattr(merged.requirements, field, value)
+    for field in ("meals", "activities"):
+        existing = getattr(merged.requirements, field)
+        for item in getattr(update.requirements, field):
+            _append_unique(existing, item)
+    return merged
+
+
 # Public entry point
 
 
@@ -905,6 +1175,7 @@ def understand(
     message: str,
     *,
     currency_hint: str | None = None,
+    previous_extraction: EnquiryExtraction | None = None,
 ) -> EnquiryUnderstandResponse:
     """Extract structured enquiry fields from a free-text request.
 
@@ -925,17 +1196,21 @@ def understand(
 
     _apply_date_guard(message, extraction)
     _apply_flexibility_window(message, extraction)
-    _apply_semantic_preservation(message, extraction)
     _apply_budget_fallback(message, extraction)
-    _apply_traveler_consistency(extraction)
+    _apply_traveler_consistency(message, extraction)
+    _apply_semantic_preservation(message, extraction)
     _apply_currency_hint(extraction, currency_hint)
+    if previous_extraction is not None:
+        extraction = _merge_with_previous(previous_extraction, extraction)
+        _apply_traveler_consistency(message, extraction)
+        _preserve_extraction_details(extraction)
 
     # Always use a deterministic title instead of trusting inconsistent
     # free-form LLM title generation.
     extraction.title = _build_enquiry_title(extraction)
 
     missing = detect_missing_fields(extraction)
-    questions = generate_clarifying_questions(missing)
+    questions = generate_clarifying_questions(missing, extraction)
     score = _completeness(missing)
 
     logger.info(

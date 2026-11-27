@@ -1,7 +1,25 @@
 from unittest.mock import patch
 
+import pytest
+
 from app.capabilities.chat_safety.schemas import LLMResult
 from app.capabilities.chat_safety.service import moderate
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Can we connect through whatsapp?",
+        "WhatsApp pe baat karte hain.",
+    ],
+)
+def test_social_move_request_blocks_without_llm(message):
+    with patch("app.capabilities.chat_safety.service.moderate_with_llm") as mock_llm:
+        result = moderate(message)
+        assert result.action == "BLOCK"
+        assert result.category == "OFF_PLATFORM_COMMUNICATION"
+        assert result.source == "deterministic"
+        mock_llm.assert_not_called()
 
 
 def test_phone_blocks_without_llm():
@@ -12,19 +30,18 @@ def test_phone_blocks_without_llm():
         mock_llm.assert_not_called()
 
 
-def test_llm_block_off_platform():
+def test_llm_can_allow_platform_feature_mention():
     with patch("app.capabilities.chat_safety.service.moderate_with_llm") as mock_llm:
         mock_llm.return_value = (
             LLMResult(
-                decision="BLOCK",
-                category="OFF_PLATFORM_COMMUNICATION",
+                decision="ALLOW",
+                category=None,
                 confidence=0.95,
             ),
             "groq",
         )
-        result = moderate("WhatsApp pe baat karte hain.")
-        assert result.action == "BLOCK"
-        assert result.category == "OFF_PLATFORM_COMMUNICATION"
+        result = moderate("Does the app support WhatsApp login?")
+        assert result.action == "ALLOW"
         assert result.provider == "groq"
 
 

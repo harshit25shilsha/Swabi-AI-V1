@@ -111,6 +111,8 @@ class EnquiryFlag(StrEnum):
     PETS = "pets"
     COUPLE_FRIENDLY = "couple_friendly"
     ENTIRE_APARTMENT = "entire_apartment"
+    ACTIVITY_DESTINATION_REVIEW = "activity_destination_review"
+    TRAVELLER_COUNT_REVIEW = "traveller_count_review"
 
 
 # Field names for missing_fields / clarifying_questions.
@@ -118,9 +120,12 @@ class EnquiryFlag(StrEnum):
 
 FIELD_DESTINATION = "destination"
 FIELD_DESCRIPTION = "description"
-FIELD_WHEN = "when"  # covers travel_date OR duration
+# Legacy response field names kept for callers that used the earlier
+# three-field completeness model. They are no longer required fields.
+FIELD_WHEN = "when"
 FIELD_DURATION = "duration"
 FIELD_TRAVEL_DATE = "travel_date"
+FIELD_TRAVEL_DATE_END = "travel_date_end"
 FIELD_TRAVELERS = "travelers"
 FIELD_BUDGET = "budget"
 FIELD_ACCOMMODATION = "accommodation"
@@ -128,34 +133,47 @@ FIELD_TRANSPORT = "transport"
 FIELD_MEALS = "meals"
 FIELD_TOUR_GUIDE = "tour_guide"
 FIELD_ACTIVITIES = "activities"
-FIELD_SPECIAL_INSTRUCTIONS = "special_instructions"
+FIELD_SPECIAL_INSTRUCTIONS = "special_requests"
 
-# Minimum information needed to understand the trip.
+# Explicit refusals are preserved in the extraction, but require a final
+# confirmation before an itinerary is considered complete.
+UNCONFIRMED_NEGATIVE_VALUES: dict[str, tuple[str, ...]] = {
+    FIELD_ACCOMMODATION: ("no accommodation required",),
+    FIELD_TRANSPORT: ("no transport required",),
+    FIELD_MEALS: ("no meals required",),
+    FIELD_TOUR_GUIDE: ("no",),
+    FIELD_SPECIAL_INSTRUCTIONS: ("no special requests",),
+}
+
+# The nine pieces of information needed to hand an enquiry to a travel
+# provider.  Keep these names aligned with the response fields: consumers use
+# ``missing_fields`` to drive their follow-up UI.
 REQUIRED_FIELDS: tuple[str, ...] = (
     FIELD_DESTINATION,
-    FIELD_WHEN,
-    FIELD_TRAVELERS,
+    FIELD_TRAVEL_DATE,
+    FIELD_TRAVEL_DATE_END,
+    FIELD_ACCOMMODATION,
+    FIELD_TRANSPORT,
+    FIELD_MEALS,
+    FIELD_TOUR_GUIDE,
+    FIELD_ACTIVITIES,
+    FIELD_SPECIAL_INSTRUCTIONS,
 )
 
 # Useful planning preferences, but not blockers for creating an enquiry.
 RECOMMENDED_FIELDS: tuple[str, ...] = (
     FIELD_BUDGET,
-    FIELD_ACCOMMODATION,
-    FIELD_TRANSPORT,
-    FIELD_DURATION,
-    FIELD_TRAVEL_DATE,
+    FIELD_TRAVELERS,
 )
 
 # Preference details that should not be requested unless the user raises them.
 OPTIONAL_FIELDS: tuple[str, ...] = (
-    FIELD_MEALS,
-    FIELD_TOUR_GUIDE,
-    FIELD_ACTIVITIES,
-    FIELD_SPECIAL_INSTRUCTIONS,
     FIELD_DESCRIPTION,
 )
 
 # Kept as the existing askable-field grouping for internal callers.
-ASKABLE_FIELDS: tuple[str, ...] = RECOMMENDED_FIELDS
+ASKABLE_FIELDS: tuple[str, ...] = REQUIRED_FIELDS + RECOMMENDED_FIELDS
 
-MAX_CLARIFYING_QUESTIONS = 4
+# There must be one question for each missing required field.  Do not cap this
+# below nine: doing so makes the response internally inconsistent.
+MAX_CLARIFYING_QUESTIONS = len(REQUIRED_FIELDS)

@@ -262,6 +262,8 @@ Groq → Gemini
 Each provider has its own circuit breaker. If Groq fails or its circuit
 is open, Gemini is tried. If both fail or are open, the guardrail fails
 open unless a soft detector already flagged REVIEW (see §10).
+The Gemini call is bounded by `GEMINI_TIMEOUT_SECONDS`; a timeout counts
+as a provider failure and the configured fail-open policy is applied.
 
 Enquiry Understanding does **not** use the Gemini fallback. A failed
 extraction has no safe fallback, so it fails closed (502/504) and the
@@ -564,9 +566,9 @@ Referenced here so they are not lost:
 `POST /api/v1/enquiry/understand` receives a free-text travel request
 and returns:
 
-1. A structured `EnquiryExtraction` object (20 optional fields).
-2. A list of missing field names.
-3. Clarifying questions for the most important missing fields.
+1. A structured `EnquiryExtraction` object (21 optional fields).
+2. A list of genuinely unanswered required field names.
+3. Exactly one clarifying question for each missing required field.
 4. A completeness score (0.0–1.0) for the frontend to display.
 
 Read-only. It does not create enquiries, call vendors, or touch any
@@ -582,7 +584,7 @@ The extraction schema covers three sources:
 - the **Swabi BRD** `CUST-ENQ-*` fields (for future UI additions)
 
 When the UI and BRD disagree, both fields are included. Fields the UI
-does not render today (`rooms`, `property_type`, `trip_type`, `flags`,
+does not render today (`rooms`, `property_type`, `property_preferences`, `trip_type`, `flags`,
 `adults`, `children[]`) are populated when the user mentions them and
 dormant otherwise. This avoids a second extraction pass when the two
 specs converge.
@@ -604,10 +606,56 @@ The extraction itself is LLM-driven and will vary slightly between runs.
 Everything downstream is deterministic:
 
 - `missing_fields` — computed from the extraction in a fixed order.
-- `clarifying_questions` — templates keyed by field name, capped at 4.
-- `completeness` — `1.0 - (required_missing / required_total)`.
+- `clarifying_questions` — one template-backed question for every missing
+  required field, in the same order as `missing_fields`.
+- `completeness` — `completed_required_fields / 9`, rounded to four decimal
+  places.
 
 The frontend can rely on these being stable for a given extraction.
+
+### Required-answer model
+
+The required fields are, in order: `destination`, `travel_date`,
+`travel_date_end`, `accommodation`, `transport`, `meals`, `tour_guide`,
+`activities`, and `special_requests`. Budget, party size, duration, room
+count, date flexibility, and other descriptive fields are useful extraction
+data but do not affect completeness.
+
+`property_preferences` is an optional list for explicitly stated Travel for
+Work, Travel with Pets, Entire Apartment, and Couple Friendly preferences. It
+is returned when present but never creates a missing field or question.
+
+`null` or an empty list means unknown. Explicitly declined services are
+preserved as values such as `"No transport required"`,
+`["No Meals Required"]`, `"No"` for a guide, and `"No special requests"`.
+They remain missing until the traveller confirms the refusal, at which point
+the service asks one field-specific confirmation question without losing the
+original stated preference.
+
+An explicitly named itinerary city is enough evidence for a generic activity
+such as `"Sightseeing in Jaipur"`; the service does not infer individual
+attractions or experiences.
+
+Traveller composition is reconciled only from explicitly stated adult, child,
+and party counts. A total party size never implies that all travellers are
+adults, and a stated child without an age is retained with `age: null`. When
+explicit counts disagree, the stated composition is preserved and
+`traveller_count_review` is added instead of silently changing the request.
+
+Guide language or type is also evidence-bound: a generic guide request becomes
+`"Yes"`; a language/type is emitted only when the traveller states it. Clear
+activity/destination mismatches retain the requested activity and add
+`activity_destination_review`, allowing downstream review without discarding a
+user preference.
+
+### Enquiry follow-ups
+
+The request may include an optional `previous_extraction` containing the
+`extraction` object returned for the preceding turn. The service extracts the
+new message, overlays supplied scalar answers, and merges list answers without
+duplicates. This retains previously captured trip details while a traveller
+answers a clarification such as "no meals". The client owns this context; the
+enquiry endpoint does not maintain a server-side conversation store.
 
 ### Redis response cache
 
@@ -617,9 +665,9 @@ separate, opt-in cache for strictly static RAG answers; live or mixed-source
 support responses are never cached.
 
 The cache key is a SHA-256 digest of a canonical, versioned payload containing
-the whitespace-normalized message, normalized currency hint, configured model,
-`ENQUIRY_PROMPT_VERSION`, and response-schema version. Message case and
-punctuation are preserved. The resulting key uses the
+the whitespace-normalized message, normalized currency hint,
+`previous_extraction`, configured model, `ENQUIRY_PROMPT_VERSION`, and
+response-schema version. Message case and punctuation are preserved. The resulting key uses the
 `swabi:cache:enquiry-understand:v1:` prefix, so raw enquiry text is not exposed
 in Redis keys and prompt/schema changes naturally select a new entry.
 
@@ -656,10 +704,10 @@ The prompt resolves:
 - **Ordinal weekdays** (`"first Saturday of December"`, `"next Monday"`)
   → resolved using the current date
 - **Ranges** → `travel_date` + `travel_date_end`
-- **Duration-derived end** → `travel_date_end = travel_date + duration_days - 1`
+- **Duration** → preserved independently; it does not create an end date.
 
-**Month-only expressions** (`"in December"`) leave `travel_date` null.
-The date picker on the frontend collects the actual date. The prompt
+**Month-only expressions** (`"in December"`) leave both exact date fields
+null. The date picker on the frontend collects the actual dates. The prompt
 explicitly forbids inventing a specific date from a month-only phrase.
 
 ### Enum values
