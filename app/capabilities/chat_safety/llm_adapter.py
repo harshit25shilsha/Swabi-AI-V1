@@ -25,35 +25,6 @@ from app.llm.gateway import LLMGateway
 log = get_logger(__name__)
 
 
-def _classify_gemini(self, system: str, user: str) -> str:
-    client = self._get_gemini_client()
-
-    def _call():
-        return client.models.generate_content(
-            model=settings.gemini_model,
-            contents=user,
-            config=genai_types.GenerateContentConfig(
-                system_instruction=system,
-                temperature=settings.llm_temperature,
-                max_output_tokens=settings.llm_max_tokens,
-                response_mime_type="application/json",
-            ),
-        )
-
-    # google-genai retries 503 internally, which can push past 40s.
-    # Enforce our own wall-clock cap so the fail-open path stays bounded.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-        future = ex.submit(_call)
-        try:
-            response = future.result(timeout=settings.gemini_timeout_seconds)
-        except concurrent.futures.TimeoutError as exc:
-            raise TimeoutError(
-                f"Gemini wall-clock timeout after {settings.gemini_timeout_seconds}s"
-            ) from exc
-
-    return response.text or "{}"
-
-
 class ChatSafetyLLMAdapter:
     """Synchronous adapter over Groq (via gateway) + Gemini (direct)."""
 
@@ -102,7 +73,9 @@ class ChatSafetyLLMAdapter:
 
     def _classify_gemini(self, system: str, user: str) -> str:
         client = self._get_gemini_client()
-        response = client.models.generate_content(
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(
+            client.models.generate_content,
             model=settings.gemini_model,
             contents=user,
             config=genai_types.GenerateContentConfig(
@@ -112,6 +85,19 @@ class ChatSafetyLLMAdapter:
                 response_mime_type="application/json",
             ),
         )
+        try:
+            response = future.result(timeout=settings.gemini_timeout_seconds)
+        except concurrent.futures.TimeoutError as exc:
+            if future.done():
+                raise
+            future.cancel()
+            raise TimeoutError(
+                f"Gemini wall-clock timeout after {settings.gemini_timeout_seconds}s"
+            ) from exc
+        finally:
+            # Do not let executor shutdown wait for a timed-out SDK request.
+            executor.shutdown(wait=False, cancel_futures=True)
+
         return response.text or "{}"
 
     def _get_gemini_client(self) -> genai.Client:

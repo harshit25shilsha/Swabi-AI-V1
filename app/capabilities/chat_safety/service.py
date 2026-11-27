@@ -36,6 +36,7 @@ from app.capabilities.chat_safety.detectors.phone import detect_phone
 from app.capabilities.chat_safety.detectors.scattered_numbers import (
     detect_scattered_number_sequence,
 )
+from app.capabilities.chat_safety.detectors.social import detect_social
 from app.capabilities.chat_safety.detectors.url import detect_url
 from app.capabilities.chat_safety.moderator import moderate_with_llm
 from app.capabilities.chat_safety.policies.policy import apply_policy
@@ -62,6 +63,7 @@ _HARD_CHECKS = [
     (detect_email, ModerationCategory.EMAIL, 0.99),
     (detect_payment, ModerationCategory.PAYMENT_INFORMATION, 0.97),
     (detect_url, ModerationCategory.EXTERNAL_URL, 0.95),
+    (detect_social, ModerationCategory.OFF_PLATFORM_COMMUNICATION, 0.95),
 ]
 
 

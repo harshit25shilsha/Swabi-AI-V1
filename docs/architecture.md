@@ -262,6 +262,8 @@ Groq → Gemini
 Each provider has its own circuit breaker. If Groq fails or its circuit
 is open, Gemini is tried. If both fail or are open, the guardrail fails
 open unless a soft detector already flagged REVIEW (see §10).
+The Gemini call is bounded by `GEMINI_TIMEOUT_SECONDS`; a timeout counts
+as a provider failure and the configured fail-open policy is applied.
 
 Enquiry Understanding does **not** use the Gemini fallback. A failed
 extraction has no safe fallback, so it fails closed (502/504) and the
