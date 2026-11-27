@@ -32,6 +32,13 @@ from app.capabilities.support.forbidden import (
     has_financial_promise,
     strip_forbidden_paths,
 )
+from app.capabilities.support.greeting import (
+    GREETING_PROMPT_VERSION,
+    GREETING_RESPONSE_PROMPT,
+    GreetingAnswer,
+    GreetingClassification,
+    GreetingClassifier,
+)
 from app.capabilities.support.intent_llm import LLMIntentClassifier
 from app.capabilities.support.intent_resolver import IntentResolver, ResolvedIntent
 from app.capabilities.support.live_data import (
@@ -347,6 +354,16 @@ def _get_gateway() -> LLMGateway:
 _resolver: IntentResolver | None = None
 
 
+_greeting_classifier: GreetingClassifier | None = None
+
+
+def _get_greeting_classifier() -> GreetingClassifier:
+    global _greeting_classifier
+    if _greeting_classifier is None:
+        _greeting_classifier = GreetingClassifier(gateway=_get_gateway())
+    return _greeting_classifier
+
+
 def _get_resolver() -> IntentResolver:
     global _resolver
     if _resolver is None:
@@ -378,10 +395,76 @@ class SupportAskPlan:
     cache_eligible: bool = False
     retriever: RagRetriever | None = None
     version_status: VersionStatus | None = None
+    greeting_checked: bool = False
+    greeting_response: SupportAskResponse | None = None
+
+
+def _greeting_response_for_request(
+    request: SupportAskRequest,
+) -> SupportAskResponse | None:
+    classification: GreetingClassification | None = _get_greeting_classifier().classify(
+        request.question
+    )
+    if classification is None or not classification.greeting_only:
+        return None
+
+    try:
+        result = _get_gateway().generate_structured_sync(
+            prompt=f"USER MESSAGE (untrusted): {request.question}",
+            response_model=GreetingAnswer,
+            system=GREETING_RESPONSE_PROMPT,
+            temperature=0.0,
+            max_tokens=120,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "greeting_response_generation_failed: %s",
+            exc,
+            extra={"event": "support_greeting_response_failed"},
+        )
+        return None
+
+    answer = result.answer.strip()
+    if not answer:
+        log.warning(
+            "greeting_response_generation_empty",
+            extra={"event": "support_greeting_response_failed"},
+        )
+        return None
+
+    return SupportAskResponse(
+        answer=answer,
+        answer_type=AnswerType.ANSWERED,
+        citations=[],
+        confidence=classification.confidence,
+        retrieval_mode_used="not_applicable",
+        knowledge_version="",
+        provider=settings.llm_provider,
+        prompt_version=GREETING_PROMPT_VERSION,
+        live_data_used=False,
+        live_data_sources=[],
+        live_data_warning=None,
+    )
 
 
 def prepare_support_ask(request: SupportAskRequest) -> SupportAskPlan:
     """Resolve sources once and identify safe static-RAG cache candidates."""
+    greeting_response = _greeting_response_for_request(request)
+    if greeting_response is not None:
+        log.info(
+            "support_greeting_only",
+            extra={"event": "support_greeting_only"},
+        )
+        return SupportAskPlan(
+            resolved=ResolvedIntent(
+                intent=LiveDataIntent.NONE,
+                source="none",
+                reason="greeting_only",
+            ),
+            greeting_checked=True,
+            greeting_response=greeting_response,
+        )
+
     intent_started = time.perf_counter()
     resolved = _get_resolver().resolve(
         request.question,
@@ -396,7 +479,10 @@ def prepare_support_ask(request: SupportAskRequest) -> SupportAskPlan:
         use_rag=resolved.use_rag,
     )
 
-    plan = SupportAskPlan(resolved=resolved)
+    plan = SupportAskPlan(
+        resolved=resolved,
+        greeting_checked=True,
+    )
     static_knowledge_request = (
         resolved.intent == LiveDataIntent.NONE
         and resolved.source == "llm"
@@ -457,6 +543,22 @@ def ask(
             provider="",
             prompt_version=SUPPORT_PROMPT_VERSION,
         )
+
+    if plan is not None:
+        if plan.greeting_response is not None:
+            return plan.greeting_response
+        greeting_checked = plan.greeting_checked
+    else:
+        greeting_checked = False
+
+    if not greeting_checked:
+        greeting_response = _greeting_response_for_request(request)
+        if greeting_response is not None:
+            log.info(
+                "support_greeting_only",
+                extra={"event": "support_greeting_only"},
+            )
+            return greeting_response
 
     live_text: str | None = None
     live_data_used = False

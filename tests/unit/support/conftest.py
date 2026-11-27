@@ -8,6 +8,7 @@ import pytest
 @pytest.fixture(autouse=True)
 def use_offline_service_intent_resolver(monkeypatch):
     from app.capabilities.support import service
+    from app.capabilities.support.greeting import GreetingClassification
     from app.capabilities.support.intent_resolver import ResolvedIntent
     from app.capabilities.support.live_data_check import (
         is_general_process_question,
@@ -30,4 +31,13 @@ def use_offline_service_intent_resolver(monkeypatch):
                 knowledge_query=question if use_rag else None,
             )
 
+    class OfflineGreetingClassifier:
+        def classify(self, _message):
+            return GreetingClassification(greeting_only=False, confidence=1.0)
+
     monkeypatch.setattr(service, "_get_resolver", OfflineIntentResolver)
+    monkeypatch.setattr(
+        service,
+        "_get_greeting_classifier",
+        OfflineGreetingClassifier,
+    )
